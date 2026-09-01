@@ -73,6 +73,7 @@ use self::residency::V2Residency;
 
 mod execution;
 mod legacy;
+mod model_provider;
 mod residency;
 mod service_tier;
 mod spawn;

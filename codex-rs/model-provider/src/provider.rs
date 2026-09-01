@@ -28,6 +28,7 @@ use crate::amazon_bedrock::AmazonBedrockModelProvider;
 use crate::auth::ProviderAuthScope;
 use crate::auth::ResolvedProviderAuth;
 use crate::auth::auth_manager_for_provider;
+use crate::auth::provider_uses_first_party_auth_path;
 use crate::auth::resolve_provider_auth;
 use crate::auth::resolve_provider_auth_for_scope;
 use crate::models_endpoint::OpenAiModelsEndpoint;
@@ -307,14 +308,6 @@ pub type ModelProviderFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a
 
 /// Shared runtime model provider handle.
 pub type SharedModelProvider = Arc<dyn ModelProvider>;
-
-fn provider_uses_first_party_auth_path(provider: &ModelProviderInfo) -> bool {
-    provider.requires_openai_auth
-        && provider.env_key.is_none()
-        && provider.experimental_bearer_token.is_none()
-        && provider.auth.is_none()
-        && provider.aws.is_none()
-}
 
 /// Creates the default runtime model provider for configured provider metadata.
 pub fn create_model_provider(
@@ -1000,7 +993,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_non_openai_provider_returns_no_account_state() {
+    fn custom_non_openai_provider_drops_ambient_account_state() {
         let provider = create_model_provider(
             ModelProviderInfo {
                 name: "Custom".to_string(),
@@ -1009,9 +1002,13 @@ mod tests {
                 requires_openai_auth: false,
                 ..Default::default()
             },
-            /*auth_manager*/ None,
+            Some(AuthManager::from_auth_for_testing(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            )),
         );
 
+        assert!(provider.auth_manager().is_none());
+        assert!(!provider.supports_attestation());
         assert_eq!(
             provider.account_state(),
             Ok(ProviderAccountState {

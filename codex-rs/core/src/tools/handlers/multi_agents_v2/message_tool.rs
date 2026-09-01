@@ -8,6 +8,7 @@ use super::*;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::handlers::multi_agent_message::AgentMessageRoute;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MessageDeliveryMode {
@@ -40,24 +41,15 @@ pub(crate) struct FollowupTaskArgs {
     pub(crate) message: String,
 }
 
-pub(super) fn message_content(message: String) -> Result<String, FunctionCallError> {
-    if message.trim().is_empty() {
-        return Err(FunctionCallError::RespondToModel(
-            "Empty message can't be sent to an agent".to_string(),
-        ));
-    }
-    Ok(message)
-}
-
 /// Handles the shared MultiAgentV2 message flow for both `send_message` and `followup_task`.
 pub(super) async fn handle_message_string_tool(
     invocation: ToolInvocation,
     mode: MessageDeliveryMode,
+    message_route: AgentMessageRoute,
     target: String,
     message: String,
     analytics: &mut ToolCallAnalytics,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
-    let message = message_content(message)?;
     let ToolInvocation {
         session,
         turn,
@@ -65,6 +57,7 @@ pub(super) async fn handle_message_string_tool(
         source,
         ..
     } = invocation;
+    message_route.validate_message(&message)?;
     let receiver_thread_id = resolve_agent_target(&session, &turn, &target).await?;
     analytics.set_receiver(receiver_thread_id);
     let receiver_agent = session
@@ -86,23 +79,30 @@ pub(super) async fn handle_message_string_tool(
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
     let resume_config = build_agent_resume_config(turn.as_ref())?;
-    session
+    let receiver_is_openai = session
         .services
         .agent_control
-        .ensure_v2_agent_loaded(resume_config, receiver_thread_id, /*parent*/ None)
+        .agent_uses_openai_model_provider(receiver_thread_id, &resume_config)
         .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     let author = turn
         .session_source
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
-    let communication = communication_from_tool_message(
+    let communication = message_route.into_communication(
+        &source,
+        receiver_is_openai,
         author,
         receiver_agent_path.clone(),
         message,
-        &source,
         mode.trigger_turn(),
-    );
+    )?;
+    session
+        .services
+        .agent_control
+        .ensure_v2_agent_loaded(resume_config, receiver_thread_id, /*parent*/ None)
+        .await
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     let kind = match mode {
         MessageDeliveryMode::QueueOnly => AgentCommunicationKind::Message,
         MessageDeliveryMode::TriggerTurn => AgentCommunicationKind::Followup,

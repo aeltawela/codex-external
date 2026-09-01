@@ -11,6 +11,18 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
 
+use super::multi_agent_message::AgentMessageRoute;
+#[cfg(test)]
+pub(crate) use super::multi_agent_message::create_followup_task_tool;
+#[cfg(test)]
+pub(crate) use super::multi_agent_message::create_followup_task_tool_for_route;
+#[cfg(test)]
+pub(crate) use super::multi_agent_message::create_send_message_tool;
+#[cfg(test)]
+pub(crate) use super::multi_agent_message::create_send_message_tool_for_route;
+use super::multi_agent_message::insert_agent_message_properties;
+use super::multi_agent_message::spawn_required_fields;
+
 pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
 const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 
@@ -18,6 +30,8 @@ const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your 
 const SPAWN_AGENT_TYPE_OVERRIDE_DESCRIPTION_V1: &str = "Agent type override for the new agent. Omit to inherit the parent agent type with a full-history fork; otherwise, `default` is used.";
 const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
     "Model override for the new agent. Omit unless an explicit override is needed.";
+const EXTERNAL_SPAWN_AGENT_DESCRIPTION: &str = "Spawns an authorized non-OpenAI agent through the plaintext collaboration bridge. `agent_type` is required and must name a configured non-OpenAI role. Omit `fork_turns` or use `none`; cross-provider history inheritance is rejected.";
+const EXTERNAL_SPAWN_AGENT_TYPE_DESCRIPTION: &str = "Required configured non-OpenAI role. Choose an `agent_type` documented by the standard `spawn_agent` tool.";
 const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
 
 #[derive(Debug, Clone)]
@@ -97,18 +111,31 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
     })
 }
 
+#[cfg(test)]
 pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
-    let available_models_description = options.expose_spawn_agent_model_overrides.then(|| {
+    create_spawn_agent_tool_v2_for_route(options, AgentMessageRoute::Native)
+}
+
+pub(crate) fn create_spawn_agent_tool_v2_for_route(
+    options: SpawnAgentToolOptions,
+    message_route: AgentMessageRoute,
+) -> ToolSpec {
+    let expose_agent_type =
+        options.expose_agent_type || message_route.requires_explicit_agent_type();
+    let expose_model_overrides =
+        options.expose_spawn_agent_model_overrides && message_route.accepts_spawn_model_overrides();
+    let available_models_description = expose_model_overrides.then(|| {
         spawn_agent_models_description(&options.available_models, options.multi_agent_version)
     });
-    let inherited_model_guidance = (options.expose_spawn_agent_model_overrides
+    let inherited_model_guidance = (expose_model_overrides
         && !options.hide_agent_type_model_reasoning)
         .then_some(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE);
-    let mut properties = spawn_agent_common_properties_v2(&options.agent_type_description);
-    if !options.expose_agent_type {
+    let mut properties =
+        spawn_agent_common_properties_v2(&options.agent_type_description, message_route);
+    if !expose_agent_type {
         properties.remove("agent_type");
     }
-    if !options.expose_spawn_agent_model_overrides {
+    if !expose_model_overrides {
         properties.remove("model");
         properties.remove("reasoning_effort");
     }
@@ -120,18 +147,25 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
         )),
     );
 
+    let description = match message_route {
+        AgentMessageRoute::ExternalPlaintext => EXTERNAL_SPAWN_AGENT_DESCRIPTION.to_string(),
+        AgentMessageRoute::Native | AgentMessageRoute::ProviderPlaintext => {
+            spawn_agent_tool_description_v2(
+                available_models_description.as_deref(),
+                inherited_model_guidance,
+                options.usage_hint_text,
+            )
+        }
+    };
+
     ToolSpec::Function(ResponsesApiTool {
         name: "spawn_agent".to_string(),
-        description: spawn_agent_tool_description_v2(
-            available_models_description.as_deref(),
-            inherited_model_guidance,
-            options.usage_hint_text,
-        ),
+        description,
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(
             properties,
-            Some(vec!["task_name".to_string(), "message".to_string()]),
+            spawn_required_fields(message_route),
             Some(false.into()),
         ),
         output_schema: Some(spawn_agent_output_schema_v2(
@@ -175,67 +209,6 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
             parameters: JsonSchema::object(properties, Some(vec!["target".to_string()]), Some(false.into())),
             output_schema: Some(send_input_output_schema()),
         })],
-    })
-}
-
-pub fn create_send_message_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
-        (
-            "target".to_string(),
-            JsonSchema::string(Some(
-                "Relative or canonical task name to message (from spawn_agent).".to_string(),
-            )),
-        ),
-        (
-            "message".to_string(),
-            JsonSchema::string(Some(
-                "Message text to queue on the target agent.".to_string(),
-            ))
-            .with_encrypted(),
-        ),
-    ]);
-
-    ToolSpec::Function(ResponsesApiTool {
-        name: "send_message".to_string(),
-        description: "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn."
-            .to_string(),
-        strict: false,
-        defer_loading: None,
-        parameters: JsonSchema::object(
-            properties,
-            Some(vec!["target".to_string(), "message".to_string()]),
-            Some(false.into()),
-        ),
-        output_schema: None,
-    })
-}
-
-pub fn create_followup_task_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
-        (
-            "target".to_string(),
-            JsonSchema::string(Some(
-                "Agent id or canonical task name to send a follow-up task to (from spawn_agent)."
-                    .to_string(),
-            )),
-        ),
-        (
-            "message".to_string(),
-            JsonSchema::string(Some(
-                "Message text to send to the target agent.".to_string(),
-            ))
-            .with_encrypted(),
-        ),
-    ]);
-
-    ToolSpec::Function(ResponsesApiTool {
-        name: "followup_task".to_string(),
-        description: "Send a follow-up task to an existing non-root target agent and trigger a turn if it is idle. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes."
-            .to_string(),
-        strict: false,
-        defer_loading: None,
-        parameters: JsonSchema::object(properties, Some(vec!["target".to_string(), "message".to_string()]), Some(false.into())),
-        output_schema: None,
     })
 }
 
@@ -617,33 +590,39 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
     ])
 }
 
-fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<String, JsonSchema> {
-    BTreeMap::from([
-        (
-            "message".to_string(),
-            JsonSchema::string(Some(
-                "Initial plain-text task for the new agent.".to_string(),
-            ))
-            .with_encrypted(),
-        ),
+fn spawn_agent_common_properties_v2(
+    agent_type_description: &str,
+    message_route: AgentMessageRoute,
+) -> BTreeMap<String, JsonSchema> {
+    let (agent_type_description, fork_turns_description, message_description) =
+        match message_route {
+            AgentMessageRoute::Native | AgentMessageRoute::ProviderPlaintext => (
+                format!(
+                    "Agent type override for the new agent. Omit unless explicitly asked. The selected role applies regardless of how much parent history is inherited.\n{agent_type_description}"
+                ),
+                "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns."
+                    .to_string(),
+                "Initial plain-text task for the new agent.",
+            ),
+            AgentMessageRoute::ExternalPlaintext => (
+                EXTERNAL_SPAWN_AGENT_TYPE_DESCRIPTION.to_string(),
+                "Optional history selection. Omit this field or use `none` for a fresh cross-provider child; cross-provider history inheritance is rejected."
+                    .to_string(),
+                "Initial plaintext task for the external agent.",
+            ),
+        };
+    let mut properties = BTreeMap::from([
         (
             "agent_type".to_string(),
-            JsonSchema::string(Some(format!(
-                "Agent type override for the new agent. Omit unless explicitly asked. The selected role applies regardless of how much parent history is inherited.\n{agent_type_description}"
-            ))),
+            JsonSchema::string(Some(agent_type_description)),
         ),
         (
             "fork_turns".to_string(),
-            JsonSchema::string(Some(
-                "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns."
-                    .to_string(),
-            )),
+            JsonSchema::string(Some(fork_turns_description)),
         ),
         (
             "model".to_string(),
-            JsonSchema::string(Some(
-                SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION.to_string(),
-            )),
+            JsonSchema::string(Some(SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION.to_string())),
         ),
         (
             "reasoning_effort".to_string(),
@@ -652,7 +631,9 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
                     .to_string(),
             )),
         ),
-    ])
+    ]);
+    insert_agent_message_properties(&mut properties, message_description, message_route);
+    properties
 }
 
 fn hide_spawn_agent_metadata_options(properties: &mut BTreeMap<String, JsonSchema>) {

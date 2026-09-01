@@ -351,6 +351,79 @@ fn responses_lite_prefix_ids_track_thread_and_payload() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn outgoing_request_normalizes_agent_message_only_for_non_openai_provider() -> anyhow::Result<()> {
+    let non_openai_client = test_model_client(SessionSource::Cli);
+    let mut openai_client = test_model_client(SessionSource::Cli);
+    Arc::get_mut(&mut openai_client.state)
+        .expect("test client should have unique session state")
+        .provider = create_model_provider(
+        ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+        /*auth_manager*/ None,
+    );
+    let task = ResponseItem::AgentMessage {
+        id: Some(codex_protocol::ResponseItemId::with_suffix(
+            "amsg",
+            "delegated-task",
+        )),
+        author: "/root".to_string(),
+        recipient: "/root/worker".to_string(),
+        content: vec![
+            codex_protocol::models::AgentMessageInputContent::InputText {
+                text: "Message Type: NEW_TASK\nPayload:\ndo work".to_string(),
+            },
+        ],
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let configuration_update = ResponseItem::ConfigurationUpdate {
+        reasoning: codex_protocol::models::ConfigurationReasoning {
+            effort: ReasoningEffort::High,
+        },
+    };
+    let prompt = Prompt {
+        input: vec![configuration_update.clone(), task.clone()],
+        ..Default::default()
+    };
+    let build = |client: &ModelClient| {
+        client.build_responses_request(
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &test_responses_metadata_for_client(
+                client,
+                /*turn_id*/ None,
+                format!("{}:0", client.state.thread_id),
+                /*parent_thread_id*/ None,
+                TestCodexResponsesRequestKind::Turn,
+            ),
+        )
+    };
+
+    let openai_request = build(&openai_client)?;
+    let non_openai_request = build(&non_openai_client)?;
+
+    assert_eq!(prompt.input, vec![configuration_update, task]);
+    assert_eq!(openai_request.input, prompt.input);
+    assert_eq!(
+        non_openai_request.input,
+        vec![ResponseItem::Message {
+            id: Some(codex_protocol::ResponseItemId::with_suffix(
+                "msg",
+                "delegated-task",
+            )),
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "Message Type: NEW_TASK\nPayload:\ndo work".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }]
+    );
+    Ok(())
+}
+
 fn test_session_telemetry() -> SessionTelemetry {
     SessionTelemetry::new(
         ThreadId::new(),

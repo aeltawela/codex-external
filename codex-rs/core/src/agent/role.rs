@@ -22,6 +22,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -37,6 +38,8 @@ const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not availabl
 struct AgentRoleOverrides {
     developer_instructions: Option<String>,
     model: Option<String>,
+    model_catalog_json: Option<AbsolutePathBuf>,
+    model_provider: Option<String>,
     model_reasoning_effort: Option<ReasoningEffort>,
     model_reasoning_summary: Option<ReasoningSummary>,
     model_verbosity: Option<Verbosity>,
@@ -52,13 +55,33 @@ pub(crate) async fn apply_role_to_config(
     config: &mut Config,
     role_name: Option<&str>,
 ) -> Result<(), String> {
+    apply_role_to_config_with_provider_policy(config, role_name, /*apply_model_provider*/ true)
+        .await
+}
+
+/// Reapplies current role restrictions while preserving the provider recorded in the rollout.
+pub(crate) async fn apply_role_to_config_for_resume(
+    config: &mut Config,
+    role_name: Option<&str>,
+) -> Result<(), String> {
+    apply_role_to_config_with_provider_policy(
+        config, role_name, /*apply_model_provider*/ false,
+    )
+    .await
+}
+
+async fn apply_role_to_config_with_provider_policy(
+    config: &mut Config,
+    role_name: Option<&str>,
+    apply_model_provider: bool,
+) -> Result<(), String> {
     let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
 
     let role = resolve_role_config(config, role_name)
         .cloned()
         .ok_or_else(|| format!("unknown agent_type '{role_name}'"))?;
 
-    apply_role_to_config_inner(config, role_name, &role)
+    apply_role_to_config_inner(config, role_name, &role, apply_model_provider)
         .await
         .map_err(|err| {
             tracing::warn!("failed to apply role to config: {err}");
@@ -70,6 +93,7 @@ async fn apply_role_to_config_inner(
     config: &mut Config,
     role_name: &str,
     role: &AgentRoleConfig,
+    apply_model_provider: bool,
 ) -> anyhow::Result<()> {
     let is_built_in = !config.agent_roles.contains_key(role_name);
     let Some(config_file) = role.config_file.as_ref() else {
@@ -77,9 +101,44 @@ async fn apply_role_to_config_inner(
     };
     let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
     let role_config = deserialize_config_toml_with_base(role_layer_toml, &config.codex_home)?;
+    let model_provider_baseline = config.subagent_model_provider_baseline();
+    // Provider and catalog are populated only from user-owned role layers. Use that routing
+    // snapshot rather than trusting the role file again here.
+    let role_model_provider = role.model_provider.clone();
+    let role_model_catalog_json = role.model_catalog_json.clone();
+    if apply_model_provider
+        && role_routing_snapshot_changed(
+            role,
+            &role_config.model_provider,
+            &role_config.model_catalog_json,
+        )
+    {
+        return Err(anyhow!(
+            "agent role `{role_name}` changed its model provider or catalog after configuration was loaded; reload configuration"
+        ));
+    }
+    let effective_provider_id = if apply_model_provider {
+        role_model_provider
+            .as_deref()
+            .unwrap_or(&config.model_provider_id)
+    } else {
+        &config.model_provider_id
+    };
+    // A catalog is meaningful only for the provider that will actually own the child. This also
+    // keeps resume bound to its persisted provider if the role file changed since the rollout.
+    let model_catalog_json = role_model_catalog_json.filter(|_| {
+        role_model_provider
+            .as_ref()
+            .is_none_or(|provider_id| provider_id == effective_provider_id)
+    });
     let mut overrides = AgentRoleOverrides {
         developer_instructions: role_config.developer_instructions,
         model: role_config.model,
+        model_catalog_json,
+        model_provider: apply_model_provider
+            .then_some(role_model_provider)
+            .flatten()
+            .filter(|provider_id| provider_id != &config.model_provider_id),
         model_reasoning_effort: role_config.model_reasoning_effort,
         model_reasoning_summary: role_config.model_reasoning_summary,
         model_verbosity: role_config.model_verbosity,
@@ -124,8 +183,24 @@ async fn apply_role_to_config_inner(
     {
         return Ok(());
     }
-    *config = role_overrides::build_next_config(config, role_layer_toml, &overrides)?;
+    *config = role_overrides::build_next_config(
+        config,
+        role_layer_toml,
+        &overrides,
+        &model_provider_baseline,
+    )
+    .map_err(|err| anyhow!("agent role `{role_name}` is invalid: {err}"))?;
     Ok(())
+}
+
+fn role_routing_snapshot_changed(
+    role: &AgentRoleConfig,
+    fresh_model_provider: &Option<String>,
+    fresh_model_catalog_json: &Option<AbsolutePathBuf>,
+) -> bool {
+    (role.model_provider.is_some() || role.model_catalog_json.is_some())
+        && (&role.model_provider != fresh_model_provider
+            || &role.model_catalog_json != fresh_model_catalog_json)
 }
 
 async fn load_role_layer_toml(
@@ -179,11 +254,19 @@ mod role_overrides {
         config: &Config,
         role_layer_toml: TomlValue,
         overrides: &AgentRoleOverrides,
+        model_provider_baseline: &crate::config::SubagentModelProviderBaseline,
     ) -> anyhow::Result<Config> {
         let mut next_config = config.clone();
         next_config.config_layer_stack = build_config_layer_stack(config, &role_layer_toml)?;
         if let Some(model) = &overrides.model {
             next_config.model = Some(model.clone());
+        }
+        if let Some(model_provider_id) = &overrides.model_provider {
+            next_config
+                .select_subagent_model_provider(model_provider_baseline, model_provider_id)?;
+        }
+        if let Some(model_catalog_json) = &overrides.model_catalog_json {
+            next_config.model_catalog = Some(crate::config::load_catalog_json(model_catalog_json)?);
         }
         if let Some(instructions) = &overrides.developer_instructions {
             next_config.developer_instructions = Some(instructions.clone());
@@ -348,6 +431,8 @@ mod built_in {
                     AgentRoleConfig {
                         description: Some("Default agent.".to_string()),
                         config_file: None,
+                        model_provider: None,
+                        model_catalog_json: None,
                         nickname_candidates: None,
                     }
                 ),
@@ -362,6 +447,8 @@ Rules:
 - You are encouraged to spawn up multiple explorers in parallel when you have multiple distinct questions to ask about the codebase that can be answered independently. This allows you to get more information faster without waiting for one question to finish before asking the next. While waiting for the explorer results, you can continue working on other local tasks that do not depend on those results. This parallelism is a key advantage of delegation, so use it whenever you have multiple questions to ask.
 - Reuse existing explorers for related questions."#.to_string()),
                         config_file: Some("explorer.toml".to_string().parse().unwrap_or_default()),
+                        model_provider: None,
+                        model_catalog_json: None,
                         nickname_candidates: None,
                     }
                 ),
@@ -377,6 +464,8 @@ Rules:
 - Explicitly assign **ownership** of the task (files / responsibility). When the subtask involves code changes, you should clearly specify which files or modules the worker is responsible for. This helps avoid merge conflicts and ensures accountability. For example, you can say "Worker 1 is responsible for updating the authentication module, while Worker 2 will handle the database layer." By defining clear ownership, you can delegate more effectively and reduce coordination overhead.
 - Always tell workers they are **not alone in the codebase**, and they should not revert the edits made by others, and they should adjust their implementation to accommodate the changes made by others. This is important because there may be multiple workers making changes in parallel, and they need to be aware of each other's work to avoid conflicts and ensure a cohesive final product."#.to_string()),
                         config_file: None,
+                        model_provider: None,
+                        model_catalog_json: None,
                         nickname_candidates: None,
                     }
                 ),

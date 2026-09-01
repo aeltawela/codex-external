@@ -161,6 +161,10 @@ pub struct ConfigToml {
     /// Provider to use from the model_providers map.
     pub model_provider: Option<String>,
 
+    /// Model providers that subagents may use in addition to their parent's provider.
+    /// Only user and selected-profile config layers grant this authority.
+    pub subagent_model_provider_allowlist: Option<Vec<String>>,
+
     /// Size of the context window for the model, in tokens.
     pub model_context_window: Option<i64>,
 

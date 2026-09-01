@@ -3,8 +3,10 @@ use codex_api::ResponsesApiRequest;
 use codex_api::TextControls;
 use codex_api::create_text_param_for_request;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::models::ConfigurationReasoning;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
 use serde_json::value::RawValue;
 use std::sync::Arc;
@@ -109,6 +111,81 @@ fn responses_lite_request_copies_strip_image_details() {
     assert_eq!(
         prompt.get_formatted_input_for_request(/*use_responses_lite*/ false),
         original
+    );
+}
+
+#[test]
+fn non_openai_input_normalizer_owns_all_openai_only_cleanup() {
+    let items = vec![
+        ResponseItem::ConfigurationUpdate {
+            reasoning: ConfigurationReasoning {
+                effort: ReasoningEffort::High,
+            },
+        },
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "send_message".to_string(),
+            namespace: Some("collaboration".to_string()),
+            arguments: "{}".to_string(),
+            encrypted_function_args: Some(vec!["ciphertext".to_string()]),
+            call_id: "call-1".to_string(),
+            internal_chat_message_metadata_passthrough: Some(Default::default()),
+        },
+    ];
+
+    let items = normalize_input_for_non_openai_provider(items)
+        .expect("non-OpenAI request input should normalize");
+
+    assert_eq!(
+        items,
+        vec![ResponseItem::FunctionCall {
+            id: None,
+            name: "send_message".to_string(),
+            namespace: Some("collaboration".to_string()),
+            arguments: "{}".to_string(),
+            encrypted_function_args: None,
+            call_id: "call-1".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        }]
+    );
+}
+
+#[test]
+fn plaintext_agent_message_normalizer_rejects_encrypted_content() {
+    let items = vec![
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "send_message".to_string(),
+            namespace: Some("collaboration".to_string()),
+            arguments: "{}".to_string(),
+            encrypted_function_args: Some(vec!["ciphertext".to_string()]),
+            call_id: "call-1".to_string(),
+            internal_chat_message_metadata_passthrough: Some(Default::default()),
+        },
+        ResponseItem::ConfigurationUpdate {
+            reasoning: ConfigurationReasoning {
+                effort: ReasoningEffort::High,
+            },
+        },
+        ResponseItem::AgentMessage {
+            id: None,
+            author: "/root".to_string(),
+            recipient: "/root/worker".to_string(),
+            content: vec![
+                codex_protocol::models::AgentMessageInputContent::EncryptedContent {
+                    encrypted_content: "ciphertext".to_string(),
+                },
+            ],
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ];
+    let error = normalize_input_for_non_openai_provider(items)
+        .expect_err("encrypted message should fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("cannot consume encrypted inter-agent messages")
     );
 }
 

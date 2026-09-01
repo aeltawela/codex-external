@@ -15,6 +15,7 @@ use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
+use crate::tools::handlers::multi_agent_message::AgentMessageRoute;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
 use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
@@ -22,6 +23,8 @@ use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHa
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use assert_matches::assert_matches;
+use codex_config::CONFIG_TOML_FILE;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_history::InitialHistory;
@@ -35,6 +38,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::items::TurnItem;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::BaseInstructions;
@@ -148,7 +152,6 @@ async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
     tokio::fs::write(
         &role_config_path,
         r#"model = "gpt-5-role-override"
-model_provider = "ollama"
 model_reasoning_effort = "minimal"
 "#,
     )
@@ -161,6 +164,8 @@ model_reasoning_effort = "minimal"
         AgentRoleConfig {
             description: Some("Role with model overrides".to_string()),
             config_file: Some(role_config_path),
+            model_provider: None,
+            model_catalog_json: None,
             nickname_candidates: None,
         },
     );
@@ -545,6 +550,8 @@ service_tier = "priority"
             AgentRoleConfig {
                 description: Some("Role with a child service tier".to_string()),
                 config_file: Some(role_config_path),
+                model_provider: None,
+                model_catalog_json: None,
                 nickname_candidates: None,
             },
         );
@@ -615,6 +622,8 @@ service_tier = "turbo"
         AgentRoleConfig {
             description: Some("Role with an unsupported child tier".to_string()),
             config_file: Some(role_config_path),
+            model_provider: None,
+            model_catalog_json: None,
             nickname_candidates: None,
         },
     );
@@ -1016,7 +1025,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
             )
     }));
 
-    SendMessageHandlerV2
+    SendMessageHandlerV2::new(AgentMessageRoute::Native)
         .handle(invocation(
             session.clone(),
             turn.clone(),
@@ -1042,6 +1051,29 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
                         && !communication.trigger_turn
             )
     }));
+
+    let plaintext_send = invocation(
+        session.clone(),
+        turn.clone(),
+        "send_message",
+        function_payload(json!({
+            "target": "test_process",
+            "message": "plaintext-send-message"
+        })),
+    );
+    let Err(err) = SendMessageHandlerV2::new(AgentMessageRoute::ExternalPlaintext)
+        .handle(plaintext_send)
+        .await
+    else {
+        panic!("plaintext payload must not be delivered to an OpenAI V2 agent");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "The selected agent uses the OpenAI model provider; retry with the standard collaboration tool."
+                .to_string()
+        )
+    );
 }
 
 #[tokio::test]
@@ -1211,11 +1243,13 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         agent_nickname: None,
         agent_role: None,
     });
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
 
-    SendMessageHandlerV2
+    SendMessageHandlerV2::new(AgentMessageRoute::Native)
         .handle(invocation(
-            Arc::new(session),
-            Arc::new(turn),
+            Arc::clone(&session),
+            Arc::clone(&turn),
             "send_message",
             function_payload(json!({
                 "target": "/root",
@@ -1224,6 +1258,19 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         ))
         .await
         .expect("send_message should accept the root agent path");
+
+    SendMessageHandlerV2::new(AgentMessageRoute::ProviderPlaintext)
+        .handle(invocation(
+            session,
+            turn,
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "plaintext-done"
+            })),
+        ))
+        .await
+        .expect("an external v2 child should be able to message the OpenAI root");
 
     assert!(manager.captured_ops().iter().any(|(id, op)| {
         *id == root.thread_id
@@ -1235,6 +1282,19 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
                         && communication.other_recipients.is_empty()
                         && communication.content.is_empty()
                         && communication.encrypted_content.as_deref() == Some("encrypted-done")
+                        && !communication.trigger_turn
+            )
+    }));
+    assert!(manager.captured_ops().iter().any(|(id, op)| {
+        *id == root.thread_id
+            && matches!(
+                op,
+                Op::InterAgentCommunication { communication, .. }
+                    if communication.author == child_path
+                        && communication.recipient == AgentPath::root()
+                        && communication.other_recipients.is_empty()
+                        && communication.content.contains("plaintext-done")
+                        && communication.encrypted_content.is_none()
                         && !communication.trigger_turn
             )
     }));
@@ -1288,7 +1348,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
         agent_role: None,
     });
 
-    let Err(err) = FollowupTaskHandlerV2
+    let Err(err) = FollowupTaskHandlerV2::new(AgentMessageRoute::Native)
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -1670,7 +1730,10 @@ async fn multi_agent_v2_send_message_rejects_legacy_items_field() {
         })),
     );
 
-    let Err(err) = SendMessageHandlerV2.handle(invocation).await else {
+    let Err(err) = SendMessageHandlerV2::new(AgentMessageRoute::Native)
+        .handle(invocation)
+        .await
+    else {
         panic!("legacy items field should be rejected in v2");
     };
     let FunctionCallError::RespondToModel(message) = err else {
@@ -1725,7 +1788,10 @@ async fn multi_agent_v2_send_message_rejects_interrupt_parameter() {
         })),
     );
 
-    let Err(err) = SendMessageHandlerV2.handle(invocation).await else {
+    let Err(err) = SendMessageHandlerV2::new(AgentMessageRoute::Native)
+        .handle(invocation)
+        .await
+    else {
         panic!("send_message interrupt parameter should be rejected");
     };
     let FunctionCallError::RespondToModel(message) = err else {
@@ -1813,7 +1879,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         )
         .await;
 
-    FollowupTaskHandlerV2
+    FollowupTaskHandlerV2::new(AgentMessageRoute::Native)
         .handle(invocation(
             session,
             turn,
@@ -1953,7 +2019,10 @@ async fn multi_agent_v2_followup_task_rejects_legacy_items_field() {
         })),
     );
 
-    let Err(err) = FollowupTaskHandlerV2.handle(invocation).await else {
+    let Err(err) = FollowupTaskHandlerV2::new(AgentMessageRoute::Native)
+        .handle(invocation)
+        .await
+    else {
         panic!("legacy items field should be rejected in v2");
     };
     let FunctionCallError::RespondToModel(message) = err else {
@@ -3903,6 +3972,183 @@ async fn multi_agent_v2_interrupt_agent_accepts_unloaded_task_name_target() {
         serde_json::from_str(&content).expect("list_agents result should be json");
     assert_eq!(result.agents.len(), 1);
     assert_eq!(result.agents[0].agent_name, "/root");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_message_preflight_does_not_load_cold_target() {
+    struct Case {
+        route: AgentMessageRoute,
+        target_is_openai: bool,
+        stale_source_parent: bool,
+        message: &'static str,
+        expected_error: &'static str,
+    }
+
+    let cases = [
+        Case {
+            route: AgentMessageRoute::ExternalPlaintext,
+            target_is_openai: true,
+            stale_source_parent: false,
+            message: "plaintext message",
+            expected_error: "The selected agent uses the OpenAI model provider; retry with the standard collaboration tool.",
+        },
+        Case {
+            route: AgentMessageRoute::Native,
+            target_is_openai: false,
+            stale_source_parent: true,
+            message: "encrypted message",
+            expected_error: "The selected agent uses a non-OpenAI model provider; retry with the corresponding `external_agents` collaboration tool.",
+        },
+        Case {
+            route: AgentMessageRoute::Native,
+            target_is_openai: true,
+            stale_source_parent: false,
+            message: " \t\n ",
+            expected_error: "Empty message can't be sent to an agent",
+        },
+    ];
+
+    for case in cases {
+        let (session, turn, manager, target_thread_id) =
+            setup_unloaded_v2_message_target(case.target_is_openai, case.stale_source_parent).await;
+        let Err(error) = SendMessageHandlerV2::new(case.route)
+            .handle(invocation(
+                session,
+                turn,
+                "send_message",
+                function_payload(json!({
+                    "target": "worker",
+                    "message": case.message
+                })),
+            ))
+            .await
+        else {
+            panic!("message preflight should reject the request");
+        };
+
+        assert_eq!(
+            error,
+            FunctionCallError::RespondToModel(case.expected_error.to_string())
+        );
+        match manager.get_thread(target_thread_id).await {
+            Err(error) => assert_matches!(
+                error.details(),
+                CodexErrorDetails::ThreadNotFound(id) if *id == target_thread_id
+            ),
+            Ok(_) => panic!("message preflight must not load the cold target"),
+        }
+    }
+}
+
+async fn setup_unloaded_v2_message_target(
+    target_is_openai: bool,
+    stale_source_parent: bool,
+) -> (
+    Arc<crate::session::session::Session>,
+    Arc<TurnContext>,
+    ThreadManager,
+    ThreadId,
+) {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    let user_config = toml::from_str("subagent_model_provider_allowlist = [\"ollama\"]")
+        .expect("valid user config");
+    config.config_layer_stack = config
+        .config_layer_stack
+        .with_user_config(&config.codex_home.join(CONFIG_TOML_FILE), user_config)
+        .expect("provider allowlist should be valid user config");
+    let state_db = init_state_db(&config)
+        .await
+        .expect("sqlite state db should initialize");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db.clone()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    set_turn_config(&mut turn, config.clone());
+
+    let mut target_config = config;
+    if !target_is_openai {
+        target_config.model_provider_id = "ollama".to_string();
+        target_config.model_provider = target_config
+            .model_providers
+            .get("ollama")
+            .cloned()
+            .expect("test provider should be configured");
+    }
+    let target_path = AgentPath::try_from("/root/worker").expect("agent path");
+    let target_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            target_config,
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(target_path),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            crate::agent::control::SpawnAgentOptions {
+                parent_thread_id: Some(root.thread_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("worker spawn should succeed")
+        .thread_id;
+    let stale_thread = manager
+        .remove_thread(&target_thread_id)
+        .await
+        .expect("worker thread should be loaded before removal");
+    stale_thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("removed worker thread should still accept shutdown");
+    stale_thread.wait_until_terminated().await;
+    if stale_source_parent {
+        let mut metadata = state_db
+            .get_thread(target_thread_id)
+            .await
+            .expect("worker metadata query should succeed")
+            .expect("worker metadata should exist");
+        metadata.source =
+            serde_json::to_string(&SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: ThreadId::new(),
+                depth: 99,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }))
+            .expect("stale session source should serialize");
+        state_db
+            .upsert_thread(&metadata)
+            .await
+            .expect("stale worker metadata should persist");
+    }
+
+    (Arc::new(session), Arc::new(turn), manager, target_thread_id)
 }
 
 #[tokio::test]

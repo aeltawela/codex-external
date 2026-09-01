@@ -228,7 +228,6 @@ async fn build_tool_call_uses_namespace_for_registry_name() -> anyhow::Result<()
     );
     assert_eq!(call.call_id, "call-namespace");
     assert_eq!(call.encrypted_function_args, Some(Vec::new()));
-    assert_eq!(call.direct_source(), ToolCallSource::Direct);
     match call.payload {
         ToolPayload::Function { arguments } => {
             assert_eq!(arguments, "{}");

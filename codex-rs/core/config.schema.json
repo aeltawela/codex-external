@@ -6865,6 +6865,13 @@
       ],
       "description": "Directory where Codex stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`."
     },
+    "subagent_model_provider_allowlist": {
+      "description": "Model providers that subagents may use in addition to their parent's provider. Only user and selected-profile config layers grant this authority.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "suppress_unstable_features_warning": {
       "description": "Suppress warnings about unstable (under development) features.",
       "type": "boolean"

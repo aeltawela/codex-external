@@ -1,9 +1,12 @@
 pub use codex_api::ResponseEvent;
+use codex_protocol::ResponseItemId;
+use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::plaintext_agent_message_content;
 use codex_tools::ToolSpec;
 use futures::Stream;
 use serde_json::Value;
@@ -63,6 +66,55 @@ impl Prompt {
         }
         input
     }
+}
+
+/// Removes OpenAI-only request state and lowers plaintext inter-agent messages into the
+/// ordinary user-message form accepted by configured non-OpenAI Responses providers.
+pub(crate) fn normalize_input_for_non_openai_provider(
+    input: Vec<ResponseItem>,
+) -> Result<Vec<ResponseItem>> {
+    let mut normalized = Vec::with_capacity(input.len());
+    for item in input {
+        let Some(mut item) = normalize_item_for_non_openai_provider(item)? else {
+            continue;
+        };
+        item.clear_internal_chat_message_metadata_passthrough();
+        if let ResponseItem::FunctionCall {
+            encrypted_function_args,
+            ..
+        } = &mut item
+        {
+            *encrypted_function_args = None;
+        }
+        normalized.push(item);
+    }
+    Ok(normalized)
+}
+
+fn normalize_item_for_non_openai_provider(item: ResponseItem) -> Result<Option<ResponseItem>> {
+    let (id, content) = match item {
+        ResponseItem::AgentMessage { id, content, .. } => (id, content),
+        // Configuration updates are durable controls for the OpenAI backend, not
+        // portable Responses API input items.
+        ResponseItem::ConfigurationUpdate { .. } => return Ok(None),
+        item => return Ok(Some(item)),
+    };
+    let text = plaintext_agent_message_content(&content).ok_or_else(|| {
+        CodexErr::InvalidRequest(
+            "non-OpenAI model providers cannot consume encrypted inter-agent messages".to_string(),
+        )
+    })?;
+    let id = id.map(|id| {
+        let suffix = id.as_str().strip_prefix("amsg_").unwrap_or(id.as_str());
+        ResponseItemId::with_suffix("msg", suffix)
+    });
+    Ok(Some(ResponseItem::Message {
+        id,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText { text }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }))
 }
 
 fn strip_image_details(items: &mut [ResponseItem]) {

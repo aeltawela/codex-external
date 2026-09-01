@@ -5,10 +5,12 @@ use crate::config::HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use crate::thread_manager::models_manager_for_config;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use codex_models_manager::manager::RefreshStrategy;
+use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
@@ -31,6 +33,19 @@ pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIME
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
 pub(crate) const MAX_SPAWN_AGENT_MODEL_OVERRIDES: usize = 5;
+
+pub(super) async fn models_manager_for_spawn_config(
+    session: &Session,
+    config: &Config,
+) -> SharedModelsManager {
+    let parent_config = session.get_config().await;
+    models_manager_for_config(
+        &parent_config,
+        &session.services.models_manager,
+        config,
+        &session.services.auth_manager,
+    )
+}
 
 pub(crate) fn model_supports_multi_agent_backend(
     model: &ModelPreset,
@@ -340,9 +355,8 @@ pub(crate) async fn apply_spawn_agent_service_tier(
             "spawn_agent could not resolve the child model for service tier validation".to_string(),
         )
     })?;
-    let model_info = session
-        .services
-        .models_manager
+    let models_manager = models_manager_for_spawn_config(session, config).await;
+    let model_info = models_manager
         .get_model_info(model.as_str(), &config.to_models_manager_config())
         .await;
 
@@ -358,11 +372,16 @@ pub(crate) async fn apply_spawn_agent_role(
     role_name: Option<&str>,
 ) -> Result<(), FunctionCallError> {
     let previous_model = config.model.clone();
+    let previous_model_catalog = config.model_catalog.clone();
+    let previous_model_provider = config.model_provider.clone();
     let previous_reasoning_effort = config.model_reasoning_effort.clone();
     apply_role_to_config(config, role_name)
         .await
         .map_err(FunctionCallError::RespondToModel)?;
-    if config.model == previous_model && config.model_reasoning_effort == previous_reasoning_effort
+    if config.model == previous_model
+        && config.model_catalog == previous_model_catalog
+        && config.model_provider == previous_model_provider
+        && config.model_reasoning_effort == previous_reasoning_effort
     {
         return Ok(());
     }
@@ -376,9 +395,8 @@ pub(crate) async fn apply_spawn_agent_role(
                 .to_string(),
         )
     })?;
-    let model_info = session
-        .services
-        .models_manager
+    let models_manager = models_manager_for_spawn_config(session, config).await;
+    let model_info = models_manager
         .get_model_info(&model, &config.to_models_manager_config())
         .await;
     if model_info.used_fallback_model_metadata {

@@ -121,6 +121,7 @@ use crate::attestation::X_OAI_ATTESTATION_HEADER;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
+use crate::client_common::normalize_input_for_non_openai_provider;
 use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
 use crate::cyber_access_program;
@@ -938,16 +939,7 @@ impl ModelClient {
             )
         };
         if !is_openai {
-            for item in &mut input {
-                item.clear_internal_chat_message_metadata_passthrough();
-                if let ResponseItem::FunctionCall {
-                    encrypted_function_args,
-                    ..
-                } = item
-                {
-                    *encrypted_function_args = None;
-                }
-            }
+            input = normalize_input_for_non_openai_provider(input)?;
         }
         let reasoning = self.build_reasoning(model_info, effort, summary);
         let stream_options = (self.state.concurrent_reasoning_summaries_enabled

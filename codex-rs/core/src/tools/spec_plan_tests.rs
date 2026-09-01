@@ -2,6 +2,7 @@ use crate::session::tests::update_turn_settings_for_test;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use codex_config::CONFIG_TOML_FILE;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -43,6 +44,7 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 
 use crate::WaitForEnvironmentToolConfig;
+use crate::config::AgentRoleConfig;
 use crate::config::CurrentTimeReminderConfig;
 use crate::environment_selection::TurnEnvironmentState;
 use crate::responses_metadata::CodexResponsesRequestKind;
@@ -57,6 +59,7 @@ use crate::tools::handlers::McpHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::handlers::WaitForEnvironmentHandler;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
+use crate::tools::handlers::multi_agents_v2::EXTERNAL_AGENT_NAMESPACE;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::RegisteredTool;
 use crate::tools::router::ToolRouter;
@@ -327,6 +330,28 @@ fn use_bedrock_provider(turn: &mut TurnContext) {
         config.model_provider = provider_info.clone();
     });
     turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
+}
+
+fn configure_external_ollama_role(turn: &mut TurnContext, authorized: bool) {
+    update_config(turn, |config| {
+        if authorized {
+            config.config_layer_stack = config
+                .config_layer_stack
+                .with_user_config(
+                    &config.codex_home.join(CONFIG_TOML_FILE),
+                    toml::from_str("subagent_model_provider_allowlist = [\"ollama\"]")
+                        .expect("valid user config"),
+                )
+                .expect("provider allowlist should be accepted");
+        }
+        config.agent_roles.insert(
+            "external".to_string(),
+            AgentRoleConfig {
+                model_provider: Some("ollama".to_string()),
+                ..Default::default()
+            },
+        );
+    });
 }
 
 struct TestNamespaceExtensionTool {
@@ -2836,6 +2861,62 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
                 .get("message")
                 .and_then(|schema| schema.encrypted),
             Some(true)
+        );
+    }
+}
+
+#[tokio::test]
+async fn multi_agent_v2_external_surface_is_isolated_and_direct_model_only() {
+    let without_authority = probe(|turn| {
+        set_features(turn, &[Feature::CodeMode, Feature::MultiAgentV2]);
+        configure_external_ollama_role(turn, /*authorized*/ false);
+    })
+    .await;
+    let with_authority = probe(|turn| {
+        set_features(turn, &[Feature::CodeMode, Feature::MultiAgentV2]);
+        configure_external_ollama_role(turn, /*authorized*/ true);
+    })
+    .await;
+    assert_eq!(
+        with_authority.visible_spec(MULTI_AGENT_V2_NAMESPACE),
+        without_authority.visible_spec(MULTI_AGENT_V2_NAMESPACE),
+        "authorizing an external role must not alter the reserved OpenAI collaboration schema"
+    );
+    without_authority.assert_visible_lacks(&[EXTERNAL_AGENT_NAMESPACE]);
+
+    assert_eq!(
+        with_authority.namespace_function_names(EXTERNAL_AGENT_NAMESPACE),
+        &[
+            "followup_task".to_string(),
+            "send_message".to_string(),
+            "spawn_agent".to_string(),
+        ]
+    );
+    for tool_name in ["spawn_agent", "send_message", "followup_task"] {
+        let native_name = ToolName::namespaced(MULTI_AGENT_V2_NAMESPACE, tool_name).to_string();
+        assert_eq!(
+            with_authority.exposure(&native_name),
+            ToolExposure::DirectModelOnly
+        );
+        assert!(
+            !with_authority
+                .code_mode_tool_names
+                .values()
+                .any(|name| name.to_string() == native_name),
+            "{native_name} requires encrypted arguments and must not be callable through Code Mode"
+        );
+
+        let external_name = ToolName::namespaced(EXTERNAL_AGENT_NAMESPACE, tool_name).to_string();
+        assert_eq!(
+            with_authority.exposure(&external_name),
+            ToolExposure::DirectModelOnly
+        );
+        assert!(
+            !with_authority
+                .code_mode_tool_names
+                .values()
+                .any(|name| name.to_string() == external_name),
+            "{external_name} must not be callable through Code Mode"
         );
     }
 }

@@ -5812,6 +5812,8 @@ enabled = false
         crate::config::AgentRoleConfig {
             description: None,
             config_file: Some(role_path.to_path_buf()),
+            model_provider: None,
+            model_catalog_json: None,
             nickname_candidates: None,
         },
     );

@@ -3,10 +3,19 @@ use super::message_tool::MessageDeliveryMode;
 use super::message_tool::SendMessageArgs;
 use super::message_tool::handle_message_string_tool;
 use super::*;
-use crate::tools::handlers::multi_agents_spec::create_send_message_tool;
+use crate::tools::handlers::multi_agent_message::AgentMessageRoute;
+use crate::tools::handlers::multi_agent_message::create_send_message_tool_for_route;
 use codex_tools::ToolSpec;
 
-pub(crate) struct Handler;
+pub(crate) struct Handler {
+    message_route: AgentMessageRoute,
+}
+
+impl Handler {
+    pub(crate) fn new(message_route: AgentMessageRoute) -> Self {
+        Self { message_route }
+    }
+}
 
 impl ToolExecutor<ToolInvocation> for Handler {
     fn tool_name(&self) -> ToolName {
@@ -14,7 +23,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_send_message_tool()
+        create_send_message_tool_for_route(self.message_route)
     }
 
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
@@ -41,6 +50,7 @@ impl Handler {
         handle_message_string_tool(
             invocation,
             MessageDeliveryMode::QueueOnly,
+            self.message_route,
             args.target,
             args.message,
             analytics,
@@ -51,6 +61,10 @@ impl Handler {
 }
 
 impl CoreToolRuntime for Handler {
+    fn direct_tool_call_source_policy(&self) -> crate::tools::context::DirectToolCallSourcePolicy {
+        self.message_route.direct_tool_call_source_policy()
+    }
+
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }

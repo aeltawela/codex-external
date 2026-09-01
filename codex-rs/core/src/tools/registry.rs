@@ -13,6 +13,7 @@ use crate::memory_usage::emit_metric_for_tool_read;
 use crate::memory_usage::shell_script_for_invocation;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use crate::tools::context::DirectToolCallSourcePolicy;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
@@ -53,6 +54,11 @@ pub use codex_tools::ToolExposure;
 /// Implementers provide the shared `ToolExecutor` behavior plus optional
 /// core-owned metadata for hooks, telemetry, tool search, and argument diffs.
 pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
+    /// Declares how direct Responses calls carry message arguments for this runtime.
+    fn direct_tool_call_source_policy(&self) -> DirectToolCallSourcePolicy {
+        DirectToolCallSourcePolicy::Direct
+    }
+
     /// Whether this built-in control tool needs a structured tool-call event.
     fn is_builtin_control_tool(&self) -> bool {
         false

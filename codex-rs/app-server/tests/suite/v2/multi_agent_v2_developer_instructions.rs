@@ -190,7 +190,9 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
     } else {
         "gpt-5.4"
     };
-    let mut config = MockResponsesConfig::new(&server.uri()).with_model(configured_model);
+    let mut config = MockResponsesConfig::new(&server.uri())
+        .with_provider_name("OpenAI")
+        .with_model(configured_model);
     if role_has_instructions {
         config =
             config.with_root_config(&format!("developer_instructions = {ROLE_INSTRUCTIONS:?}"));
@@ -290,7 +292,6 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
 #[tokio::test]
 async fn compacted_full_history_fork_replaces_parent_developer_instructions() -> Result<()> {
     const COMPACT_SETUP_PROMPT: &str = "prepare the parent for compaction";
-    const COMPACT_PROMPT: &str = "summarize the compacted parent";
     const COMPACTED_SUMMARY: &str = "preserved compacted parent summary";
     const SPAWN_PROMPT: &str = "spawn the compacted-history worker";
     const CHILD_PROMPT: &str = "inspect the compacted parent history";
@@ -306,12 +307,18 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
                 responses::ev_function_call(SETUP_CALL_ID, "unsupported_tool", "{}"),
                 responses::ev_completed_with_tokens(
                     "parent-before-compaction",
-                    /*total_tokens*/ 96,
+                    /*total_tokens*/ 96_000,
                 ),
             ]),
             responses::sse(vec![
                 responses::ev_response_created("parent-compaction"),
-                responses::ev_assistant_message("parent-summary", COMPACTED_SUMMARY),
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": COMPACTED_SUMMARY,
+                    }
+                }),
                 responses::ev_completed_with_tokens("parent-compaction", /*total_tokens*/ 10),
             ]),
             responses::sse(vec![
@@ -371,9 +378,10 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri())
+        .with_provider_name("OpenAI")
         .with_model("gpt-5.4")
         .with_root_config(&format!(
-            "developer_instructions = {PARENT_INSTRUCTIONS:?}\nmodel_context_window = 100\nmodel_auto_compact_token_limit = 90\ncompact_prompt = {COMPACT_PROMPT:?}"
+            "developer_instructions = {PARENT_INSTRUCTIONS:?}\nmodel_context_window = 200_000\nmodel_auto_compact_token_limit = 90_000"
         ))
         .with_extra_config(&format!(
             "[features.multi_agent_v2]\nenabled = true\nsubagent_developer_instructions = {CHILD_INSTRUCTIONS:?}"
@@ -407,7 +415,10 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
     let compaction_requests = compaction_requests.requests();
     assert_eq!(compaction_requests.len(), 3);
     assert!(
-        compaction_requests[1].body_contains_text(COMPACT_PROMPT),
+        compaction_requests[1]
+            .inputs_of_type("compaction_trigger")
+            .len()
+            == 1,
         "the setup turn should perform actual mid-turn compaction"
     );
     assert!(
@@ -635,6 +646,7 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
         ));
     }
     MockResponsesConfig::new(&server.uri())
+        .with_provider_name("OpenAI")
         .with_model("gpt-5.4")
         .with_root_config(&format!(
             "developer_instructions = {PARENT_INSTRUCTIONS:?}\nmodel_reasoning_effort = \"high\""
