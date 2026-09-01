@@ -50,25 +50,100 @@ fn has_function_call_output(request: &wiremock::Request, call_id: &str) -> bool 
     })
 }
 
-async fn mount_root_collaboration_call(
+pub(super) async fn mount_collaboration_call(
     server: &wiremock::MockServer,
     prompt: &'static str,
     call_id: &'static str,
     tool_name: &'static str,
     arguments: serde_json::Value,
 ) {
+    mount_namespaced_collaboration_call(
+        server,
+        MULTI_AGENT_V2_NAMESPACE,
+        prompt,
+        call_id,
+        tool_name,
+        arguments,
+    )
+    .await;
+}
+
+pub(super) async fn mount_namespaced_collaboration_call(
+    server: &wiremock::MockServer,
+    namespace: &'static str,
+    prompt: &'static str,
+    call_id: &'static str,
+    tool_name: &'static str,
+    arguments: serde_json::Value,
+) {
+    mount_collaboration_call_with_message_encryption(
+        server, namespace, prompt, call_id, tool_name, arguments,
+        /*encrypted_function_args*/ None,
+    )
+    .await;
+}
+
+pub(super) async fn mount_encrypted_collaboration_call(
+    server: &wiremock::MockServer,
+    namespace: &'static str,
+    prompt: &'static str,
+    call_id: &'static str,
+    tool_name: &'static str,
+    arguments: serde_json::Value,
+) {
+    mount_collaboration_call_with_message_encryption(
+        server,
+        namespace,
+        prompt,
+        call_id,
+        tool_name,
+        arguments,
+        Some(json!(["message"])),
+    )
+    .await;
+}
+
+pub(super) async fn mount_plaintext_collaboration_call(
+    server: &wiremock::MockServer,
+    namespace: &'static str,
+    prompt: &'static str,
+    call_id: &'static str,
+    tool_name: &'static str,
+    arguments: serde_json::Value,
+) {
+    mount_collaboration_call_with_message_encryption(
+        server,
+        namespace,
+        prompt,
+        call_id,
+        tool_name,
+        arguments,
+        Some(json!([])),
+    )
+    .await;
+}
+
+async fn mount_collaboration_call_with_message_encryption(
+    server: &wiremock::MockServer,
+    namespace: &'static str,
+    prompt: &'static str,
+    call_id: &'static str,
+    tool_name: &'static str,
+    arguments: serde_json::Value,
+    encrypted_function_args: Option<serde_json::Value>,
+) {
     let response_id = format!("resp-{call_id}");
+    let mut function_call =
+        ev_function_call_with_namespace(call_id, namespace, tool_name, &arguments.to_string());
+    if let Some(encrypted_function_args) = encrypted_function_args {
+        function_call["item"]["encrypted_function_args"] = encrypted_function_args;
+    }
     mount_sse_once_match(
         server,
         move |request: &wiremock::Request| body_contains(request, prompt),
         sse(vec![
             ev_response_created(&response_id),
-            ev_function_call_with_namespace(
-                call_id,
-                MULTI_AGENT_V2_NAMESPACE,
-                tool_name,
-                &arguments.to_string(),
-            ),
+            function_call,
             ev_completed(&response_id),
         ]),
     )
@@ -87,7 +162,7 @@ async fn mount_root_collaboration_call(
     .await;
 }
 
-async fn mount_completed_worker(
+pub(super) async fn mount_completed_worker(
     server: &wiremock::MockServer,
     task: &'static str,
     parent_call_id: &'static str,
@@ -282,7 +357,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     const FOLLOWUP_TASK: &str = "continue work in the original environment";
 
     let server = start_mock_server().await;
-    mount_root_collaboration_call(
+    mount_collaboration_call(
         &server,
         FIRST_PROMPT,
         "first-call",
@@ -292,7 +367,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     .await;
     mount_completed_worker(&server, FIRST_TASK, "first-call").await;
 
-    mount_root_collaboration_call(
+    mount_collaboration_call(
         &server,
         EVICT_PROMPT,
         "replacement-call",
@@ -302,7 +377,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     .await;
     mount_completed_worker(&server, SECOND_TASK, "replacement-call").await;
 
-    mount_root_collaboration_call(
+    mount_collaboration_call(
         &server,
         FOLLOWUP_PROMPT,
         "followup-call",

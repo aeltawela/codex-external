@@ -2,7 +2,7 @@ use super::*;
 use crate::agent::child_config::SpawnConfigOptions;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
-use crate::agent::control::MessageDeliveryMode;
+use crate::agent::child_config::models_manager_for_spawn_config;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
 use crate::agent::next_thread_spawn_depth;
@@ -11,10 +11,10 @@ use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::session::multi_agents::resolve_usage_hints;
+use crate::tools::handlers::multi_agent_message::AgentMessageRoute;
 use crate::tools::handlers::multi_agents::collab_tool_call_status;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
-use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
-use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
+use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2_for_route;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_prompts::ResolvedModelMessages;
 use codex_protocol::AgentPath;
@@ -25,11 +25,15 @@ use codex_tools::ToolSpec;
 #[derive(Default)]
 pub(crate) struct Handler {
     options: SpawnAgentToolOptions,
+    message_route: AgentMessageRoute,
 }
 
 impl Handler {
-    pub(crate) fn new(options: SpawnAgentToolOptions) -> Self {
-        Self { options }
+    pub(crate) fn new(options: SpawnAgentToolOptions, message_route: AgentMessageRoute) -> Self {
+        Self {
+            options,
+            message_route,
+        }
     }
 }
 
@@ -39,7 +43,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_spawn_agent_tool_v2(self.options.clone())
+        create_spawn_agent_tool_v2_for_route(self.options.clone(), self.message_route)
     }
 
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
@@ -52,7 +56,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
             let turn_id = invocation.step_context.turn.sub_id.clone();
             let call_id = invocation.call_id.clone();
             let started_at_ms = now_unix_timestamp_ms();
-            let result = handle_spawn_agent(invocation).await;
+            let result = handle_spawn_agent(invocation, self.message_route).await;
             let completed_at_ms = now_unix_timestamp_ms();
             let (status, receiver_thread_ids, agents_states) = match &result {
                 Ok((_, thread_id, agent_status, _)) => (
@@ -97,6 +101,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
 
 async fn handle_spawn_agent(
     invocation: ToolInvocation,
+    message_route: AgentMessageRoute,
 ) -> Result<
     (
         SpawnAgentResult,
@@ -117,13 +122,17 @@ async fn handle_spawn_agent(
     let turn = &step_context.turn;
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
-    let fork_mode = args.fork_mode()?;
-    let message = message_content(args.message)?;
-    let role_name = args
-        .agent_type
+    message_route.validate_message(&args.message)?;
+    let mut fork_mode = args.fork_mode()?;
+    let fork_mode_is_implicit = args
+        .fork_turns
         .as_deref()
-        .map(str::trim)
-        .filter(|role| !role.is_empty());
+        .is_none_or(|fork_turns| fork_turns.trim().is_empty());
+    let role_name = message_route.validate_spawn_selection(
+        args.agent_type.as_deref(),
+        args.model.is_some(),
+        args.reasoning_effort.is_some(),
+    )?;
 
     let session_source = turn.session_source.clone();
     let child_depth = next_thread_spawn_depth(&session_source);
@@ -141,6 +150,9 @@ async fn handle_spawn_agent(
     .await
     .map_err(FunctionCallError::RespondToModel)?;
     let config = prepared.config;
+    if fork_mode_is_implicit && config.model_provider_id != turn.config.model_provider_id {
+        fork_mode = None;
+    }
     let is_full_history_fork = matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory));
     let spawn_source = thread_spawn_source(
         session.thread_id,
@@ -158,19 +170,21 @@ async fn handle_spawn_agent(
         .session_source
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
-    let communication = agent_message_from_tool(message, &source).into_communication(
+    let communication = message_route.into_communication(
+        &source,
+        config.model_provider.is_openai(),
         author,
         new_agent_path.clone(),
-        MessageDeliveryMode::TriggerTurn,
-    );
+        args.message,
+        /*trigger_turn*/ true,
+    )?;
     let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
     let multi_agent_v2_usage_hints =
         if is_full_history_fork && turn.multi_agent_version == MultiAgentVersion::V2 {
             let child_model_info = match config.model.as_deref() {
-                Some(model) if model != turn.model_info().slug => Some(
-                    session
-                        .services
-                        .models_manager
+                Some(model) => Some(
+                    models_manager_for_spawn_config(&session, &config)
+                        .await
                         .get_model_info(model, &config.to_models_manager_config())
                         .await,
                 ),
@@ -255,6 +269,10 @@ async fn handle_spawn_agent(
 }
 
 impl CoreToolRuntime for Handler {
+    fn direct_tool_call_source_policy(&self) -> crate::tools::context::DirectToolCallSourcePolicy {
+        self.message_route.direct_tool_call_source_policy()
+    }
+
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }

@@ -16,6 +16,7 @@ use crate::windows_sandbox::WindowsSandboxLevelExt;
 use codex_extension_api::empty_extension_registry;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
+use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::ResponseItemId;
 use codex_protocol::capabilities::CapabilityRootLocation;
@@ -276,6 +277,48 @@ async fn thread_analytics_opt_out_overrides_shared_client() {
     actual_thread_ids.sort();
     expected_thread_ids.sort();
     assert_eq!(actual_thread_ids, expected_thread_ids);
+}
+
+#[tokio::test]
+async fn models_manager_is_reused_for_matching_provider() {
+    let config = test_config().await;
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let source = build_models_manager(&config, Arc::clone(&auth_manager));
+
+    let matching = models_manager_for_config(&config, &source, &config, &auth_manager);
+    assert!(Arc::ptr_eq(&source, &matching));
+}
+
+#[tokio::test]
+async fn models_manager_uses_target_provider_catalog() {
+    let config = test_config().await;
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let source = build_models_manager(&config, Arc::clone(&auth_manager));
+    let mut external = config.clone();
+    external.model_provider_id = "ollama".to_string();
+    external.model_provider = external
+        .model_providers
+        .get("ollama")
+        .cloned()
+        .expect("test provider should exist");
+    let mut catalog = bundled_models_response().expect("bundled model catalog should parse");
+    let mut sentinel = catalog.models.remove(0);
+    sentinel.slug = "target-provider-sentinel".to_string();
+    catalog.models = vec![sentinel];
+    external.model_catalog = Some(catalog);
+
+    let isolated = models_manager_for_config(&config, &source, &external, &auth_manager);
+    let model_info = isolated
+        .get_model_info(
+            "target-provider-sentinel",
+            &external.to_models_manager_config(),
+        )
+        .await;
+
+    assert!(!Arc::ptr_eq(&source, &isolated));
+    assert!(!model_info.used_fallback_model_metadata);
 }
 
 /// Controls without a custom allocation policy still produce distinct thread identifiers.

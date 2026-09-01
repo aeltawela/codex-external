@@ -25,11 +25,21 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 
+#[cfg(test)]
 pub(crate) use followup_task::Handler as FollowupTaskHandler;
+#[cfg(test)]
 pub(crate) use interrupt_agent::Handler as InterruptAgentHandler;
+#[cfg(test)]
 pub(crate) use list_agents::Handler as ListAgentsHandler;
+#[cfg(test)]
 pub(crate) use send_message::Handler as SendMessageHandler;
+#[cfg(test)]
 pub(crate) use spawn::Handler as SpawnAgentHandler;
+#[cfg(test)]
+pub(crate) use surface::EXTERNAL_AGENT_NAMESPACE;
+pub(crate) use surface::MultiAgentV2ToolOptions;
+pub(crate) use surface::register_multi_agent_v2_tools;
+#[cfg(test)]
 pub(crate) use wait::Handler as WaitAgentHandler;
 
 mod analytics;
@@ -39,6 +49,7 @@ mod list_agents;
 mod message_tool;
 mod send_message;
 mod spawn;
+mod surface;
 pub(crate) mod wait;
 
 pub(crate) async fn emit_sub_agent_activity(

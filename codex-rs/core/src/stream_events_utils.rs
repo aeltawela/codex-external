@@ -322,7 +322,8 @@ pub(crate) async fn handle_output_item_done(
                 )
                 .await;
 
-            let payload_preview = tool_log_payload(&call.payload, &call.direct_source());
+            let source = ctx.tool_runtime.direct_source(&call);
+            let payload_preview = tool_log_payload(&call.payload, &source);
             tracing::info!(
                 thread_id = %ctx.sess.thread_id,
                 "ToolCall: {} {}",
@@ -337,7 +338,7 @@ pub(crate) async fn handle_output_item_done(
             let tool_future: InFlightFuture<'static> = Box::pin(
                 ctx.tool_runtime
                     .clone()
-                    .handle_tool_call(call, cancellation_token),
+                    .handle_direct_tool_call_with_source(call, source, cancellation_token),
             );
 
             output.needs_follow_up = true;

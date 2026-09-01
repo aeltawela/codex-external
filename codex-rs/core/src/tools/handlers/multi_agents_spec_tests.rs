@@ -128,6 +128,88 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
 }
 
 #[test]
+fn multi_agent_v2_plaintext_routes_use_one_required_message_field() {
+    for route in [
+        AgentMessageRoute::ProviderPlaintext,
+        AgentMessageRoute::ExternalPlaintext,
+    ] {
+        let tools = [
+            create_spawn_agent_tool_v2_for_route(
+                SpawnAgentToolOptions {
+                    multi_agent_version: MultiAgentVersion::V2,
+                    ..Default::default()
+                },
+                route,
+            ),
+            create_send_message_tool_for_route(route),
+            create_followup_task_tool_for_route(route),
+        ];
+
+        for tool in tools {
+            let ToolSpec::Function(tool) = tool else {
+                panic!("multi-agent v2 message tool should be a function");
+            };
+            let properties = tool
+                .parameters
+                .properties
+                .as_ref()
+                .expect("message tool should use object params");
+            assert_eq!(properties["message"].encrypted, None);
+            assert!(!properties.contains_key("plaintext_message"));
+            let required = tool
+                .parameters
+                .required
+                .as_ref()
+                .expect("message tool should define required fields");
+            assert!(required.iter().any(|field| field == "message"));
+        }
+    }
+}
+
+#[test]
+fn multi_agent_v2_external_spawn_schema_is_route_owned() {
+    let tool = create_spawn_agent_tool_v2_for_route(
+        SpawnAgentToolOptions {
+            available_models: vec![model_preset("should-not-be-advertised", true)],
+            agent_type_description: "external role help".to_string(),
+            usage_hint_text: Some("external usage hint".to_string()),
+            expose_agent_type: false,
+            expose_spawn_agent_model_overrides: true,
+            multi_agent_version: MultiAgentVersion::V2,
+            ..Default::default()
+        },
+        AgentMessageRoute::ExternalPlaintext,
+    );
+    let ToolSpec::Function(tool) = tool else {
+        panic!("external spawn should be a function tool");
+    };
+    let properties = tool
+        .parameters
+        .properties
+        .as_ref()
+        .expect("external spawn should define properties");
+
+    assert!(properties.contains_key("agent_type"));
+    let agent_type_description = properties["agent_type"]
+        .description
+        .as_deref()
+        .expect("external agent_type should have a bounded description");
+    assert!(!agent_type_description.contains("external role help"));
+    assert!(!properties.contains_key("model"));
+    assert!(!properties.contains_key("reasoning_effort"));
+    assert_eq!(
+        tool.parameters.required.as_ref(),
+        Some(&vec![
+            "task_name".to_string(),
+            "message".to_string(),
+            "agent_type".to_string(),
+        ])
+    );
+    assert!(!tool.description.contains("should-not-be-advertised"));
+    assert!(!tool.description.contains("external usage hint"));
+}
+
+#[test]
 fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
     let tool = create_spawn_agent_tool_v1(SpawnAgentToolOptions {
         available_models: Vec::new(),

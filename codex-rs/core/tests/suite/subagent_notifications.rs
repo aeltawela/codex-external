@@ -3196,7 +3196,9 @@ async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> 
                     AgentRoleConfig {
                         description: Some("Custom role".to_string()),
                         config_file: Some(role_path.to_path_buf()),
-                        nickname_candidates: None,
+                        model_provider: None,
+                        model_catalog_json: None,
+            nickname_candidates: None,
                     },
                 );
             })
@@ -3231,6 +3233,8 @@ async fn spawn_agent_preserves_configured_defaults_through_unrelated_role() -> R
                     AgentRoleConfig {
                         description: Some("Custom role".to_string()),
                         config_file: Some(role_path.to_path_buf()),
+                        model_provider: None,
+                        model_catalog_json: None,
                         nickname_candidates: None,
                     },
                 );
@@ -3299,6 +3303,8 @@ async fn spawn_agent_rejects_reasoning_effort_unsupported_by_role_model() -> Res
                 AgentRoleConfig {
                     description: Some("Custom role".to_string()),
                     config_file: Some(role_path.to_path_buf()),
+                    model_provider: None,
+                    model_catalog_json: None,
                     nickname_candidates: None,
                 },
             );
@@ -3371,7 +3377,9 @@ async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<
             AgentRoleConfig {
                 description: Some("Custom role".to_string()),
                 config_file: Some(role_path.to_path_buf()),
-                nickname_candidates: None,
+                model_provider: None,
+                model_catalog_json: None,
+            nickname_candidates: None,
             },
         );
     });

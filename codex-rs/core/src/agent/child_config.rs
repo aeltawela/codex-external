@@ -9,6 +9,8 @@ use crate::config::Config;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
+use crate::thread_manager::models_manager_for_config;
+use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::models::BaseInstructions;
@@ -18,6 +20,19 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::MultiAgentVersion;
 
 pub(crate) const MAX_SPAWN_AGENT_MODEL_OVERRIDES: usize = 5;
+
+pub(crate) async fn models_manager_for_spawn_config(
+    session: &Session,
+    config: &Config,
+) -> SharedModelsManager {
+    let parent_config = session.get_config().await;
+    models_manager_for_config(
+        &parent_config,
+        &session.services.models_manager,
+        config,
+        &session.services.auth_manager,
+    )
+}
 
 pub(crate) fn model_supports_multi_agent_backend(
     model: &ModelPreset,
@@ -268,9 +283,8 @@ pub(crate) async fn apply_spawn_agent_service_tier(
     let model = config.model.clone().ok_or_else(|| {
         "spawn_agent could not resolve the child model for service tier validation".to_string()
     })?;
-    let model_info = session
-        .services
-        .models_manager
+    let model_info = models_manager_for_spawn_config(session, config)
+        .await
         .get_model_info(model.as_str(), &config.to_models_manager_config())
         .await;
 
@@ -286,9 +300,14 @@ async fn apply_spawn_agent_role(
     role_name: Option<&str>,
 ) -> Result<(), String> {
     let previous_model = config.model.clone();
+    let previous_model_catalog = config.model_catalog.clone();
+    let previous_model_provider = config.model_provider.clone();
     let previous_reasoning_effort = config.model_reasoning_effort.clone();
     apply_role_to_config(config, role_name).await?;
-    if config.model == previous_model && config.model_reasoning_effort == previous_reasoning_effort
+    if config.model == previous_model
+        && config.model_catalog == previous_model_catalog
+        && config.model_provider == previous_model_provider
+        && config.model_reasoning_effort == previous_reasoning_effort
     {
         return Ok(());
     }
@@ -299,9 +318,8 @@ async fn apply_spawn_agent_role(
     let model = config.model.clone().ok_or_else(|| {
         "spawn_agent could not resolve the child model for reasoning effort validation".to_string()
     })?;
-    let model_info = session
-        .services
-        .models_manager
+    let model_info = models_manager_for_spawn_config(session, config)
+        .await
         .get_model_info(&model, &config.to_models_manager_config())
         .await;
     if model_info.used_fallback_model_metadata {

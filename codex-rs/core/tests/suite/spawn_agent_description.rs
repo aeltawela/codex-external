@@ -317,6 +317,8 @@ async fn configured_agent_roles_control_spawn_agent_type(
                     AgentRoleConfig {
                         description: Some("Research role".to_string()),
                         config_file: None,
+                        model_provider: None,
+                        model_catalog_json: None,
                         nickname_candidates: None,
                     },
                 );

@@ -433,6 +433,29 @@ pub fn build_models_manager(
     manager
 }
 
+fn build_models_manager_without_cache(
+    config: &Config,
+    auth_manager: Arc<AuthManager>,
+) -> SharedModelsManager {
+    let provider = create_model_provider(config.model_provider.clone(), Some(auth_manager));
+    provider.models_manager_without_cache(config.model_catalog.clone())
+}
+
+pub(crate) fn models_manager_for_config(
+    source_config: &Config,
+    source_models_manager: &SharedModelsManager,
+    target_config: &Config,
+    auth_manager: &Arc<AuthManager>,
+) -> SharedModelsManager {
+    if source_config.model_provider == target_config.model_provider
+        && source_config.model_catalog == target_config.model_catalog
+    {
+        Arc::clone(source_models_manager)
+    } else {
+        build_models_manager_without_cache(target_config, Arc::clone(auth_manager))
+    }
+}
+
 pub fn thread_store_from_config(
     config: &Config,
     state_db: Option<StateDbHandle>,
@@ -2153,6 +2176,21 @@ impl ThreadManagerState {
         };
         let attachment_source =
             forked_from_thread_id.filter(|_| matches!(&initial_history, InitialHistory::Forked(_)));
+        let models_manager = match parent_thread_id.or(forked_from_thread_id) {
+            Some(source_thread_id) => match self.get_thread(source_thread_id).await {
+                Ok(source_thread) => {
+                    let source_config = source_thread.session.get_config().await;
+                    models_manager_for_config(
+                        &source_config,
+                        &source_thread.session.services.models_manager,
+                        &config,
+                        &auth_manager,
+                    )
+                }
+                Err(_) => build_models_manager_without_cache(&config, Arc::clone(&auth_manager)),
+            },
+            None => Arc::clone(&self.models_manager),
+        };
         let (session, io) = Session::spawn(SessionSpawnArgs {
             startup,
             config,
@@ -2160,7 +2198,7 @@ impl ThreadManagerState {
             instructions,
             installation_id: self.installation_id.clone(),
             auth_manager,
-            models_manager: Arc::clone(&self.models_manager),
+            models_manager,
             git_root_discovery: Arc::clone(&self.git_root_discovery),
             environment_manager: Arc::clone(&self.environment_manager),
             skills_service: Arc::clone(&self.skills_service),

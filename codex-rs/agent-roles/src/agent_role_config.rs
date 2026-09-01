@@ -1,4 +1,5 @@
 use codex_config::config_toml::ConfigToml;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -13,6 +14,14 @@ pub struct AgentRoleConfig {
     pub description: Option<String>,
     /// Path to a role-specific config layer.
     pub config_file: Option<PathBuf>,
+    /// Model provider selected by a user-owned role config at config-load time.
+    ///
+    /// The loader leaves this and `model_catalog_json` unset for role files from other
+    /// configuration layers. Together, they are the provenance-bound routing snapshot used when
+    /// applying a role.
+    pub model_provider: Option<String>,
+    /// Model catalog selected by the same user-owned role routing snapshot.
+    pub model_catalog_json: Option<AbsolutePathBuf>,
     /// Candidate nicknames for agents spawned with this role.
     pub nickname_candidates: Option<Vec<String>>,
 }
@@ -32,6 +41,8 @@ pub struct ResolvedAgentRoleFile {
     pub role_name: String,
     pub description: Option<String>,
     pub nickname_candidates: Option<Vec<String>>,
+    pub model_provider: Option<String>,
+    pub model_catalog_json: Option<AbsolutePathBuf>,
     pub config: TomlValue,
 }
 
@@ -94,7 +105,8 @@ pub fn parse_agent_role_file_contents(
         ),
         parsed.nickname_candidates.as_deref(),
     )?;
-
+    let model_provider = parsed.config.model_provider;
+    let model_catalog_json = parsed.config.model_catalog_json;
     let mut config = role_file_toml;
     let Some(config_table) = config.as_table_mut() else {
         return Err(std::io::Error::new(
@@ -113,6 +125,8 @@ pub fn parse_agent_role_file_contents(
         role_name,
         description,
         nickname_candidates,
+        model_provider,
+        model_catalog_json,
         config,
     })
 }
