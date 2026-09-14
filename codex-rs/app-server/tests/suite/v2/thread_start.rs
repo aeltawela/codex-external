@@ -119,6 +119,37 @@ model = "gpt-5.4-mini"
 }
 
 #[tokio::test]
+async fn thread_start_routes_model_picker_selection_to_external_provider() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        r#"
+model = "gpt-5.6-terra"
+model_provider_routes = { "external-test" = "external" }
+[model_providers.external]
+name = "External test"
+base_url = "http://127.0.0.1:12345/v1"
+wire_api = "responses"
+"#,
+    )?;
+    let mut server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let response = server
+        .start_thread(ThreadStartParams {
+            model: Some("external-test".into()),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(
+        (response.model.as_str(), response.model_provider.as_str()),
+        ("external-test", "external")
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_start_warns_for_exec_policy_parse_failure_after_initialize() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut mcp = TestAppServer::builder()

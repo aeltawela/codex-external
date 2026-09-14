@@ -246,6 +246,25 @@ async fn thread_instruction_refresh_serializes_reads_and_releases_on_cancellatio
     );
 }
 
+#[tokio::test]
+async fn live_model_picker_rejects_a_different_provider() {
+    let (_, mut turn) = make_session_and_context().await;
+    update_turn_settings_for_test(&mut turn, |settings| {
+        Arc::make_mut(&mut settings.model_info).used_fallback_model_metadata = false;
+    });
+    let current = turn.current_settings.load_full();
+    let mut config = (*turn.config).clone();
+    assert_eq!(
+        check_legacy_turn_safety(&turn, &current, &current, &config),
+        Ok(())
+    );
+    config.model_provider_routes.insert(
+        current.selected_collaboration_mode().model().to_string(),
+        "other-provider".to_string(),
+    );
+    assert!(check_legacy_turn_safety(&turn, &current, &current, &config).is_err());
+}
+
 fn activation_models() -> Vec<ModelInfo> {
     let model = bundled_models_response()
         .expect("bundled models")

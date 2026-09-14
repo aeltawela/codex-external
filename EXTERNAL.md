@@ -29,6 +29,24 @@ resumable. Shared-task compatibility requires runtime verification.
 
 ## Qualification
 
+The mixed parent model catalog now uses `model_catalog_json` together with a
+`model_provider_routes` map from model ID to configured provider ID. Routes
+apply when creating or reopening a session, including app-server `thread/start`.
+Unsupported inherited effort falls back to the selected model's catalog default.
+Mapped external models disable the unsupported hosted web-search declaration.
+Existing live sessions cannot change providers. Reopening external history on
+OpenAI is supported; returning OpenAI or opaque provider state to external
+models is rejected before inference. This is not encryption/decryption support.
+
+Picker qualification on 2026-09-14: 536 focused core unit tests and eight
+provider/history integration tests passed, plus the app-server picker routing
+test. Scoped Clippy, repository formatting, and the CLI build passed. All five
+skill models returned live answers through app-server: DeepSeek V4.1 Flash,
+GLM 5.3 Flash, GLM 5.3, Kimi K3, and Gemma 4 31B. Live CLI checks passed for
+external creation, same-provider resume, external-to-OpenAI resume, and rejection
+of a return to external after OpenAI history. The installed wrapper also returned
+a live DeepSeek answer. These checks do not verify every thinking tier's effect.
+
 The CLI and code-mode-host binaries build with Rust 1.95.0. The initial focused
 provider suite passed 17/17 tests, and the app-server suite passed 17/17.
 A live OpenAI-parent/Ollama-child run exposed an inherited hosted web-search
@@ -52,8 +70,9 @@ the repository's `just test` recipe, not direct `cargo test`.
 
 A GitHub Actions workflow is active on a separate maintenance branch. It
 checks upstream releases daily, tests candidate rebases before promotion, and
-preserves the previous qualified branch on failure. The first qualification
-run is still being checked. No ChatGPT scheduled task is installed.
+preserves the previous qualified branch on failure. Run 34795647962 passed its
+build/tests but GitHub rejected branch publication with a workflow-scope/timeout
+error. Automatic promotion is not qualified. No ChatGPT scheduled task is installed.
 GitHub scheduling is best-effort and does not replace the
 official application's normal updater or automatically modify this Mac.
 

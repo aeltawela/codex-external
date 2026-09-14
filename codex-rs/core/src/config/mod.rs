@@ -982,6 +982,9 @@ pub struct Config {
     /// When set, this replaces the bundled catalog for the current process.
     pub model_catalog: Option<ModelsResponse>,
 
+    /// Provider ownership of models in the configured mixed catalog.
+    pub model_provider_routes: BTreeMap<String, String>,
+
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
 
@@ -3724,8 +3727,11 @@ impl Config {
             merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
 
+        let routed_provider = model.as_ref().or(cfg.model.as_ref())
+            .and_then(|model| cfg.model_provider_routes.get(model)).cloned();
+        let routed_external_model = routed_provider.as_deref().is_some_and(|provider| provider != "openai");
         let model_provider_id = config_layer_stack.required_model_provider().map(str::to_string)
-            .or(model_provider)
+            .or(routed_provider).or(model_provider)
             .or(cfg.model_provider)
             .unwrap_or_else(|| "openai".to_string());
         let model_provider = model_providers
@@ -3963,6 +3969,17 @@ impl Config {
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
         let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
+        if let Some(selected) = model.as_deref()
+            && cfg.model_provider_routes.contains_key(selected)
+            && let Some(info) = model_catalog.as_ref()
+                .and_then(|catalog| catalog.models.iter().find(|info| info.slug == selected))
+            && !info.supported_reasoning_levels.is_empty()
+            && !info.supported_reasoning_levels.iter()
+                .any(|level| Some(&level.effort) == cfg.model_reasoning_effort.as_ref())
+        {
+            cfg.model_reasoning_effort = info.default_reasoning_level.clone();
+            startup_warnings.push(format!("Using the supported default thinking level for {selected}."));
+        }
 
         let log_dir = cfg
             .log_dir
@@ -4041,6 +4058,9 @@ impl Config {
             &mut constrained_web_search_mode,
             &mut startup_warnings,
         )?;
+        if routed_external_model {
+            constrained_web_search_mode.set(WebSearchMode::Disabled)?;
+        }
 
         let mcp_servers = constrain_mcp_servers(cfg.mcp_servers.clone(), mcp_servers.as_ref())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{e}")))?;
@@ -4294,6 +4314,7 @@ impl Config {
             plan_mode_reasoning_effort: cfg.plan_mode_reasoning_effort,
             model_reasoning_summary: cfg.model_reasoning_summary,
             model_catalog,
+            model_provider_routes: cfg.model_provider_routes,
             model_verbosity: cfg.model_verbosity,
             chatgpt_base_url: cfg
                 .chatgpt_base_url

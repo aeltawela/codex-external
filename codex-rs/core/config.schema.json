@@ -6990,6 +6990,14 @@
       "description": "Provider to use from the model_providers map.",
       "type": "string"
     },
+    "model_provider_routes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "description": "Explicit model-to-provider routes for new sessions in a mixed catalog.",
+      "type": "object"
+    },
     "model_providers": {
       "additionalProperties": {
         "$ref": "#/definitions/ModelProviderInfo"
