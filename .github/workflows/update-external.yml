@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '17 7 * * *'
   workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Official Rust release tag (blank selects newest published release)'
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -30,17 +35,24 @@ jobs:
       - name: Prepare candidate without changing the working branch
         id: candidate
         shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.upstream_tag }}
         run: |
           set -euo pipefail
           git config user.name 'codex-external updater'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch origin external/0.154.0-alpha.6.2
           source_sha=$(git rev-parse FETCH_HEAD)
-          release=$(gh api repos/openai/codex/releases --jq '[.[] | select(.tag_name | startswith("rust-v"))][0].tag_name')
+          release="$REQUESTED_TAG"
+          if [[ -z "$release" ]]; then
+            release=$(gh api 'repos/openai/codex/releases?per_page=100' --jq '[.[] | select(.tag_name | startswith("rust-v"))] | sort_by(.published_at) | last | .tag_name')
+          fi
+          echo "Selected upstream release: $release"
           [[ "$release" =~ ^rust-v[0-9][0-9A-Za-z.-]*$ ]]
           git fetch https://github.com/openai/codex.git "refs/tags/$release:refs/tags/$release"
           base=b5bffd3ec4db487e7e3dec59663875b0ef7b72ca
-          git merge-base --is-ancestor "$base" "$release"
+          # Release-stamping commits may be siblings rather than ancestors.
+          # The fixed rebase base is explicit; tests gate every candidate.
           qualified="external-qualified/${release#rust-v}"
           if git ls-remote --exit-code --heads origin "$qualified" >/dev/null; then
             echo 'needed=false' >> "$GITHUB_OUTPUT"
