@@ -20,6 +20,7 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Verbosity;
+use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -45,6 +46,8 @@ struct AgentRoleOverrides {
     model_verbosity: Option<Verbosity>,
     personality: Option<Personality>,
     service_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web_search: Option<WebSearchMode>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     features: BTreeMap<String, bool>,
     skills: Option<SkillsConfig>,
@@ -144,6 +147,11 @@ async fn apply_role_to_config_inner(
         model_verbosity: role_config.model_verbosity,
         personality: role_config.personality,
         service_tier: role_config.service_tier,
+        // Roles may remove a hosted tool that their provider cannot accept,
+        // but must not enable web access that the parent has disabled.
+        web_search: role_config
+            .web_search
+            .filter(|mode| *mode == WebSearchMode::Disabled),
         ..Default::default()
     };
 
@@ -279,6 +287,9 @@ mod role_overrides {
         }
         if let Some(verbosity) = overrides.model_verbosity {
             next_config.model_verbosity = Some(verbosity);
+        }
+        if let Some(web_search) = overrides.web_search {
+            next_config.web_search_mode.set(web_search)?;
         }
         if let Some(personality) = overrides.personality {
             next_config.personality = Some(personality);
