@@ -109,6 +109,38 @@ fn session_flags_layer_count(config: &Config) -> usize {
 }
 
 #[tokio::test]
+async fn apply_role_can_disable_inherited_web_search_without_changing_parent() {
+    use codex_protocol::config_types::WebSearchMode;
+
+    let (home, mut parent) = test_config_with_cli_overrides(Vec::new()).await;
+    parent.web_search_mode.set(WebSearchMode::Live).unwrap();
+    install_custom_role(&home, &mut parent, "web_search = \"disabled\"").await;
+    let mut child = parent.clone();
+
+    apply_role_to_config(&mut child, Some("custom"))
+        .await
+        .expect("role can narrow web search");
+
+    assert_eq!(child.web_search_mode.value(), WebSearchMode::Disabled);
+    assert_eq!(parent.web_search_mode.value(), WebSearchMode::Live);
+}
+
+#[tokio::test]
+async fn apply_role_cannot_enable_disabled_web_search() {
+    use codex_protocol::config_types::WebSearchMode;
+
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    config.web_search_mode.set(WebSearchMode::Disabled).unwrap();
+    install_custom_role(&home, &mut config, "web_search = \"live\"").await;
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("role should preserve parent's restrictions");
+
+    assert_eq!(config.web_search_mode.value(), WebSearchMode::Disabled);
+}
+
+#[tokio::test]
 async fn apply_role_defaults_to_default_and_leaves_config_unchanged() {
     let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     let before = config.clone();
