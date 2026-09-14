@@ -29,6 +29,13 @@ fn check_legacy_turn_safety(
     destination: &ResolvedStepSettings,
     live_config: &Config,
 ) -> Result<(), String> {
+    if let Some(provider) = live_config
+        .model_provider_routes
+        .get(destination.selected_collaboration_mode().model())
+        && provider != &turn_context.config.model_provider_id
+    {
+        return Err("changing model providers requires a new chat".to_string());
+    }
     let stack = &live_config.config_layer_stack;
     let requirements = stack.requirements();
     let required_review = requirements

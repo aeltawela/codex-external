@@ -1099,6 +1099,73 @@ env_http_headers = { "x-openai-internal-codex-residency" = "CODEX_TEST_UNSET_RES
     Ok(())
 }
 
+#[tokio::test]
+async fn selected_model_routes_to_configured_provider() -> std::io::Result<()> {
+    let cfg = toml::from_str::<ConfigToml>(
+        r#"
+model = "gpt-test"
+web_search = "live"
+model_provider_routes = { "external-test" = "external" }
+[model_providers.external]
+name = "External test"
+base_url = "http://127.0.0.1:12345/v1"
+wire_api = "responses"
+"#,
+    )
+    .unwrap();
+    let config = Config::load_config_with_layer_stack(
+        LOCAL_FS.as_ref(),
+        cfg,
+        ConfigOverrides {
+            model: Some("external-test".into()),
+            ..Default::default()
+        },
+        tempdir()?.abs(),
+        ConfigLayerStack::default(),
+    )
+    .await?;
+    assert_eq!(config.model_provider_id, "external");
+    assert_eq!(
+        config.model_provider.base_url.as_deref(),
+        Some("http://127.0.0.1:12345/v1")
+    );
+    assert_eq!(config.web_search_mode.value(), WebSearchMode::Disabled);
+    Ok(())
+}
+
+#[tokio::test]
+async fn routed_model_replaces_unsupported_inherited_effort() -> std::io::Result<()> {
+    let home = tempdir()?;
+    let mut catalog = codex_models_manager::bundled_models_response().unwrap();
+    catalog.models.truncate(1);
+    let entry = &mut catalog.models[0];
+    entry.slug = "external-test".into();
+    entry.default_reasoning_level = Some(ReasoningEffort::High);
+    entry.supported_reasoning_levels = vec![codex_protocol::openai_models::ReasoningEffortPreset {
+        effort: ReasoningEffort::High,
+        description: "High".into(),
+    }];
+    let catalog_path = home.path().join("models.json");
+    std::fs::write(&catalog_path, serde_json::to_vec(&catalog).unwrap())?;
+    let cfg = ConfigToml {
+        model: Some("external-test".into()),
+        model_reasoning_effort: Some(ReasoningEffort::Medium),
+        model_catalog_json: Some(AbsolutePathBuf::try_from(catalog_path).unwrap()),
+        model_provider_routes: BTreeMap::from([("external-test".into(), "openai".into())]),
+        ..Default::default()
+    };
+    let config = Config::load_config_with_layer_stack(
+        LOCAL_FS.as_ref(),
+        cfg,
+        ConfigOverrides::default(),
+        home.abs(),
+        ConfigLayerStack::default(),
+    )
+    .await?;
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
+    Ok(())
+}
+
 #[test]
 fn accepts_amazon_bedrock_aws_profile_override() {
     let cfg = toml::from_str::<ConfigToml>(

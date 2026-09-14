@@ -5268,6 +5268,28 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
 }
 
 #[tokio::test]
+async fn model_picker_rejects_cross_provider_session_update() {
+    let mut configuration = make_session_configuration_for_tests().await;
+    Arc::make_mut(&mut configuration.original_config_do_not_use)
+        .model_provider_routes
+        .insert("external-test".into(), "external".into());
+    let result = configuration.apply(
+        &SessionSettingsUpdate {
+            step_settings: StepSettingsUpdate {
+                model: Some("external-test".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        &[],
+    );
+    assert!(
+        result.is_err(),
+        "a picker update must not send the external model to the current provider"
+    );
+}
+
+#[tokio::test]
 async fn emit_subagent_session_started_includes_fork_lineage_and_originator() {
     use codex_app_server_protocol::ServerNotification;
     use codex_app_server_protocol::ThreadArchivedNotification;

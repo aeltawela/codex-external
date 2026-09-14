@@ -382,6 +382,10 @@ pub struct ConfigToml {
     /// Per-thread `config` overrides are accepted but do not reapply this (no-ops).
     pub model_catalog_json: Option<AbsolutePathBuf>,
 
+    /// Explicit model-to-provider routes for new sessions in a mixed catalog.
+    #[serde(default)]
+    pub model_provider_routes: BTreeMap<String, String>,
+
     /// Optionally specify a personality for the model
     pub personality: Option<Personality>,
 

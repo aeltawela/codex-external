@@ -500,6 +500,21 @@ impl SessionConfiguration {
             &updates.step_settings,
             &next_configuration.step_settings_constraints(next_environments),
         )?);
+        let selected_model = next_configuration.step_settings.collaboration_mode.model();
+        let config = &self.original_config_do_not_use;
+        if let Some(provider) = config.model_provider_routes.get(selected_model)
+            && provider != &config.model_provider_id
+        {
+            return Err(ConstraintError::InvalidValue {
+                field_name: "model",
+                candidate: selected_model.to_string(),
+                allowed: format!(
+                    "models on provider `{}` for this chat; start a new chat with `{selected_model}` to change providers",
+                    config.model_provider_id
+                ),
+                requirement_source: codex_config::RequirementSource::Unknown,
+            });
+        }
         Ok(next_configuration)
     }
 
@@ -674,6 +689,48 @@ impl Session {
         git_enrichment_policy: GitEnrichmentPolicy,
         windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
     ) -> anyhow::Result<Arc<Self>> {
+        if !config.model_provider_routes.is_empty()
+            && config.model_provider_id != "openai"
+            && !matches!(
+                &initial_history,
+                InitialHistory::New | InitialHistory::Cleared
+            )
+        {
+            let previous_provider =
+                initial_history
+                    .get_rollout_items()
+                    .iter()
+                    .find_map(|item| match item {
+                        RolloutItem::SessionMeta(meta) => meta.meta.model_provider.as_deref(),
+                        _ => None,
+                    });
+            anyhow::ensure!(
+                previous_provider == Some(config.model_provider_id.as_str()),
+                "Changing providers to an external model requires a new chat; existing history was not sent."
+            );
+            let has_foreign_history = initial_history.scan_rollout_items(|item| match item {
+                RolloutItem::TurnContext(turn) => config
+                    .model_provider_routes
+                    .get(&turn.model)
+                    .is_some_and(|provider| provider != &config.model_provider_id),
+                RolloutItem::ResponseItem(response) => matches!(
+                    &response.item,
+                    codex_protocol::models::ResponseItem::Reasoning {
+                        encrypted_content: Some(_),
+                        ..
+                    } | codex_protocol::models::ResponseItem::Compaction { .. }
+                        | codex_protocol::models::ResponseItem::ContextCompaction {
+                            encrypted_content: Some(_),
+                            ..
+                        }
+                ),
+                _ => false,
+            });
+            anyhow::ensure!(
+                !has_foreign_history,
+                "This history contains another provider's state; start a new external chat."
+            );
+        }
         debug!(
             "Configuring session: model={}; provider={:?}",
             session_configuration

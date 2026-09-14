@@ -53,6 +53,61 @@ async fn resume_restores_windows_sandbox_override() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mixed_catalog_cannot_resume_openai_history_on_external_provider() -> Result<()> {
+    let server = start_mock_server().await;
+    let initial = test_codex().build_with_auto_env(&server).await?;
+    initial.codex.ensure_rollout_materialized().await;
+    let mut external = test_codex().with_config(|config| {
+        config
+            .model_provider_routes
+            .insert("external-test".into(), "external".into());
+        config.model_provider_id = "external".into();
+    });
+    let resumed = external.restart(&server, &initial).await;
+    assert!(
+        resumed.is_err(),
+        "resuming OpenAI state on an external provider must fail before inference"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mixed_catalog_rejects_return_to_external_after_openai_turn() -> Result<()> {
+    let server = start_mock_server().await;
+    let mut original = test_codex().with_config(|config| {
+        config.model_provider_id = "external".into();
+    });
+    let initial = original.build_with_auto_env(&server).await?;
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("response"),
+            ev_assistant_message("message", "test"),
+            ev_completed("response"),
+        ]),
+    )
+    .await;
+    initial
+        .codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "test".into(),
+            text_elements: vec![],
+        }]))
+        .await?;
+    wait_for_event(&initial.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let model = initial.config.model.clone().unwrap();
+    let mut destination = test_codex().with_config(move |config| {
+        config.model_provider_id = "external".into();
+        config.model_provider_routes.insert(model, "openai".into());
+    });
+    assert!(destination.restart(&server, &initial).await.is_err());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resume_includes_initial_messages_from_rollout_events() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
