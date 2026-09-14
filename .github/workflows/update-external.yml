@@ -55,6 +55,15 @@ jobs:
       - name: Install test tools
         if: steps.candidate.outputs.needed == 'true'
         run: brew install just cargo-nextest
+      - name: Resolve runner Rust target
+        if: steps.candidate.outputs.needed == 'true'
+        id: rust_target
+        run: echo "triple=$(rustc -vV | sed -n 's/^host: //p')" >> "$GITHUB_OUTPUT"
+      - name: Fetch verified Codex V8 build artifacts
+        if: steps.candidate.outputs.needed == 'true'
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ steps.rust_target.outputs.triple }}
       - name: Build CLI and Desktop code-mode companion
         if: steps.candidate.outputs.needed == 'true'
         working-directory: codex-rs
