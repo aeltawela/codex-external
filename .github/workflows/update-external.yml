@@ -58,7 +58,8 @@ jobs:
       - name: Resolve runner Rust target
         if: steps.candidate.outputs.needed == 'true'
         id: rust_target
-        run: echo "triple=$(rustc -vV | sed -n 's/^host: //p')" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "triple=$(rustc -vV | sed -n 's/^host: //p')" >> "$GITHUB_OUTPUT"
       - name: Fetch verified Codex V8 build artifacts
         if: steps.candidate.outputs.needed == 'true'
         uses: ./.github/actions/setup-rusty-v8
