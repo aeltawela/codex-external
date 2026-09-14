@@ -66,7 +66,27 @@ Use the repository-pinned Rust toolchain from `codex-rs/`. On low-disk hosts,
 disable incremental compilation and debug symbols. Run focused tests through
 the repository's `just test` recipe, not direct `cargo test`.
 
-## Updates
+## JSON patch compatibility
+
+External providers can return `apply_patch` as a JSON function call with an
+`input` string instead of the freeform custom call. The old handler rejected
+that payload kind as fatal before returning a tool result; an isolated regression
+reproduced the resulting stalled turn. The handler now accepts both forms through
+the same parser, permission checks, hooks, and executor. Malformed JSON produces
+a recoverable model-facing error, and hook rewrites preserve the function-call
+response pairing. This is unrelated to encryption or provider-history routing.
+
+Qualification on 2026-09-14: 114 focused patch and cross-provider checks passed,
+including a fresh external child applying a JSON patch and completing its turn.
+Scoped Clippy, repository formatting, and the CLI build passed. A live OpenAI
+parent spawned a DeepSeek Cloud child which directly added and updated a file
+using JSON patch calls and returned its final result. The live run also verified
+recovery from a malformed argument, and a separate read-only session correctly
+denied the edit without hanging. Existing running Desktop backends
+need a restart when idle to load a replacement binary; this does not repair
+already-stalled turns automatically.
+
+## Maintenance
 
 A GitHub Actions workflow is active on a separate maintenance branch. It
 checks upstream releases daily, tests candidate rebases before promotion, and

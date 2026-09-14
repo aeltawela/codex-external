@@ -42,6 +42,55 @@ fn sample_patch() -> &'static str {
 *** End Patch"#
 }
 
+#[tokio::test]
+async fn json_patch_preserves_hook_checks_and_rewrites() {
+    let payload = ToolPayload::Function {
+        arguments: json!({"input": sample_patch()}).to_string(),
+    };
+    let invocation = invocation_for_payload(payload).await;
+    let handler = ApplyPatchHandler::default();
+    assert!(handler.matches_kind(&invocation.payload));
+    assert_eq!(
+        handler.pre_tool_use_payload(&invocation),
+        Some(PreToolUsePayload {
+            tool_name: HookToolName::apply_patch(),
+            tool_input: json!({"command": sample_patch()}),
+        })
+    );
+    let rewritten = handler
+        .with_updated_hook_input(invocation, json!({"command": "rewritten patch"}))
+        .unwrap();
+    let ToolPayload::Function { arguments } = rewritten.payload else {
+        panic!("must preserve function-call output pairing");
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&arguments).unwrap(),
+        json!({"input": "rewritten patch"})
+    );
+}
+
+#[tokio::test]
+async fn json_patch_malformed_arguments_return_recoverable_error() {
+    for arguments in [
+        "not json",
+        "{}",
+        "{\"input\":42}",
+        "{\"input\":\"patch\",\"unexpected\":true}",
+    ] {
+        let invocation = invocation_for_payload(ToolPayload::Function {
+            arguments: arguments.to_string(),
+        })
+        .await;
+        let handler = ApplyPatchHandler::default();
+        assert!(
+            handler.matches_kind(&invocation.payload),
+            "malformed model arguments must reach validation, not terminate the agent"
+        );
+        let result = handler.handle_call(invocation).await;
+        assert!(matches!(result, Err(FunctionCallError::RespondToModel(_))));
+    }
+}
+
 async fn invocation_for_payload(payload: ToolPayload) -> ToolInvocation {
     let (session, turn) = make_session_and_context().await;
     let turn = Arc::new(turn);
