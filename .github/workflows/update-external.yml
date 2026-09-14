@@ -1,0 +1,80 @@
+name: Rebase and qualify Codex-external
+
+on:
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-external-updater
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    runs-on: macos-14
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_DEV_STRIP: symbols
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_PROFILE_TEST_STRIP: symbols
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+      - name: Prepare candidate without changing the working branch
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'codex-external updater'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin external/0.154.0-alpha.6.2
+          source_sha=$(git rev-parse FETCH_HEAD)
+          release=$(gh api repos/openai/codex/releases --jq '[.[] | select(.tag_name | startswith("rust-v"))][0].tag_name')
+          [[ "$release" =~ ^rust-v[0-9][0-9A-Za-z.-]*$ ]]
+          git fetch https://github.com/openai/codex.git "refs/tags/$release:refs/tags/$release"
+          base=b5bffd3ec4db487e7e3dec59663875b0ef7b72ca
+          git merge-base --is-ancestor "$base" "$release"
+          qualified="external-qualified/${release#rust-v}"
+          if git ls-remote --exit-code --heads origin "$qualified" >/dev/null; then
+            echo 'needed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          current=$(git ls-remote --heads origin external/current | cut -f1)
+          echo "previous=$current" >> "$GITHUB_OUTPUT"
+          git switch -c external-candidate "$source_sha"
+          git rebase --onto "$release" "$base"
+          echo "qualified=$qualified" >> "$GITHUB_OUTPUT"
+          echo 'needed=true' >> "$GITHUB_OUTPUT"
+      - name: Install test tools
+        if: steps.candidate.outputs.needed == 'true'
+        run: brew install just cargo-nextest
+      - name: Build CLI and Desktop code-mode companion
+        if: steps.candidate.outputs.needed == 'true'
+        working-directory: codex-rs
+        run: |
+          cargo build -p codex-cli -p codex-code-mode-host -j 3
+          ./target/debug/codex --version
+      - name: Test provider isolation and app-server agent support
+        if: steps.candidate.outputs.needed == 'true'
+        run: |
+          just test -p codex-core -E 'test(cross_provider_subagents) | test(subagent_model_provider) | test(multi_agent_message)' -j 3
+          just test -p codex-app-server -E 'test(multi_agent_v2_developer_instructions)' -j 3
+      - name: Publish qualified candidate, preserving prior releases
+        if: steps.candidate.outputs.needed == 'true'
+        env:
+          QUALIFIED: ${{ steps.candidate.outputs.qualified }}
+          PREVIOUS: ${{ steps.candidate.outputs.previous }}
+        run: |
+          set -euo pipefail
+          git add codex-rs/Cargo.lock
+          if ! git diff --cached --quiet; then
+            git commit -m 'Refresh release workspace versions in Cargo.lock'
+          fi
+          git push --atomic origin "HEAD:refs/heads/$QUALIFIED" "HEAD:refs/heads/external/current" --force-with-lease="refs/heads/external/current:$PREVIOUS"
