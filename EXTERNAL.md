@@ -88,6 +88,36 @@ already-stalled turns automatically.
 
 ## Maintenance
 
+### Thinking catalog and Desktop visibility (2026-09-15)
+
+`scripts/external-thinking.mjs` updates only the five external catalog entries:
+DeepSeek V4.1 Flash, GLM 5.3 Flash, GLM 5.3, and Kimi K3 expose low/high/max.
+Gemma 4 31B exposes none/high as thinking off/on, not three native depth tiers.
+The configured High defaults remain; Gemma's former Low default becomes High
+to represent the qualified thinking-on setting. Existing agent role files are
+not changed by this catalog transformer.
+
+All 14 combinations completed a small live Ollama Responses request. The
+installed app-server also sent every exact selected model/effort pair to a local
+fake provider. These are compatibility checks, not a reasoning-quality benchmark.
+
+The signed Desktop UI accepts the names `low`, `high`, and `max`; it labels Low
+as Light. Its separate `enabled-reasoning-efforts` preference defaults to
+low/medium/high/xhigh/ultra/persistent, filtering out Max and None even when the
+backend advertises them. `scripts/inspect-desktop-thinking.mjs` characterizes the
+actual bundled pure filter without launching or modifying the UI. Adding Max and
+None to that preference preserves those options. This preference is stored in
+the shared Codex home; changing it affects both apps' picker visibility, not
+their selected model/effort. Such a shared change requires separate approval.
+
+Sources: [GLM Flash](https://ollama.com/library/glm-5.3-flash),
+[GLM](https://ollama.com/library/glm-5.3),
+[Kimi](https://github.com/MoonshotAI/Kimi-K3),
+[DeepSeek](https://api-docs.deepseek.com/api/create-response/),
+[Gemma](https://ollama.com/library/gemma4:31b-cloud).
+
+### Rebase qualification
+
 A GitHub Actions workflow is active on a separate maintenance branch. It
 checks upstream releases daily, tests candidate rebases before promotion, and
 preserves the previous qualified branch on failure. Run 34795647962 passed its
