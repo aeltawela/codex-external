@@ -11,6 +11,50 @@ use crate::suite::apply_patch_cli::apply_patch_harness;
 use crate::suite::apply_patch_cli::mount_apply_patch;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_patch_json_function_call_creates_file_and_returns_output() -> Result<()> {
+    use core_test_support::responses::ev_assistant_message;
+    use core_test_support::responses::ev_completed;
+    use core_test_support::responses::ev_function_call;
+    use core_test_support::responses::ev_response_created;
+    use core_test_support::responses::mount_sse_sequence;
+    use core_test_support::responses::sse;
+    let harness = apply_patch_harness().await?;
+    let call_id = "json-patch";
+    let patch = "*** Begin Patch\n*** Add File: json-patch.txt\n+verified\n*** End Patch\n";
+    mount_sse_sequence(
+        harness.server(),
+        vec![
+            sse(vec![
+                ev_response_created("first"),
+                ev_function_call(
+                    call_id,
+                    "apply_patch",
+                    &serde_json::json!({"input": patch}).to_string(),
+                ),
+                ev_completed("first"),
+            ]),
+            sse(vec![
+                ev_response_created("second"),
+                ev_assistant_message("done", "done"),
+                ev_completed("second"),
+            ]),
+        ],
+    )
+    .await;
+    harness
+        .test()
+        .submit_turn_with_permission_profile("apply patch", PermissionProfile::Disabled)
+        .await?;
+    assert_eq!(
+        harness.read_file_text("json-patch.txt").await?,
+        "verified\n"
+    );
+    let output = harness.function_call_output_value(call_id).await;
+    assert!(output.to_string().contains("Success. Updated"), "{output}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apply_patch_custom_tool_call_creates_file() -> Result<()> {
     skip_if_no_network!(Ok(()));
 

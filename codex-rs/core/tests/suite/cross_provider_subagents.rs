@@ -563,6 +563,79 @@ async fn v2_custom_parent_routes_fresh_child_to_openai_provider() -> Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_external_child_json_patch_returns_result_and_completes() -> Result<()> {
+    const PROMPT: &str = "delegate a file edit";
+    const PATCH_CALL: &str = "child-json-patch";
+    let root_server = start_mock_server().await;
+    let child_server = start_mock_server().await;
+    mount_plaintext_collaboration_call(
+        &root_server,
+        "external_agents",
+        PROMPT,
+        "spawn-editor",
+        "spawn_agent",
+        json!({"message": "edit one file", "task_name": "editor", "agent_type": CUSTOM_ROLE}),
+    )
+    .await;
+    let patch_arguments = json!({
+        "input": "*** Begin Patch\n*** Add File: child-patch.txt\n+child edit verified\n*** End Patch\n"
+    });
+    mount_sse_once_match(
+        &child_server,
+        |request: &wiremock::Request| !request_has_function_call_output(request, PATCH_CALL),
+        sse(vec![
+            ev_response_created("patch"),
+            core_test_support::responses::ev_function_call(
+                PATCH_CALL,
+                "apply_patch",
+                &patch_arguments.to_string(),
+            ),
+            ev_completed("patch"),
+        ]),
+    )
+    .await;
+    let completed = mount_sse_once_match(
+        &child_server,
+        |request: &wiremock::Request| request_has_function_call_output(request, PATCH_CALL),
+        sse(vec![
+            ev_response_created("after-patch"),
+            ev_assistant_message("done", "edit completed"),
+            ev_completed("after-patch"),
+        ]),
+    )
+    .await;
+    let child_base_url = format!("{}/v1", child_server.uri());
+    let mut builder = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(move |config| {
+            configure_custom_provider(config, child_base_url, MultiAgentVersion::V2)
+        })
+        .with_model_info_override("gpt-5.5", |model| {
+            model.multi_agent_version = Some(MultiAgentVersion::V2)
+        });
+    let test = builder.build_with_auto_env(&root_server).await?;
+    let mut created = test.thread_manager.subscribe_thread_created();
+    test.submit_turn(PROMPT).await?;
+    let child_id = tokio::time::timeout(Duration::from_secs(10), created.recv()).await??;
+    let child = test.thread_manager.get_thread(child_id).await?;
+    wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    let request = wait_for_request(&completed).await;
+    assert_eq!(request.body_json()["model"], CUSTOM_MODEL);
+    assert!(request.body_contains_text("Success. Updated"));
+    assert_eq!(
+        test.fs()
+            .read_file_text(
+                &test.workspace_path_uri("child-patch.txt")?,
+                Default::default(),
+                None
+            )
+            .await?,
+        "child edit verified\n"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v2_followup_to_custom_provider_rejects_encrypted_then_delivers_plaintext_user_message()
 -> Result<()> {
     const ROOT_PROMPT: &str = "spawn a custom-provider worker for follow-up";
