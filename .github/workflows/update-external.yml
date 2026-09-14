@@ -87,6 +87,7 @@ jobs:
       - name: Test provider isolation and app-server agent support
         if: steps.candidate.outputs.needed == 'true'
         run: |
+          node --test scripts/external-thinking.test.mjs
           just test -p codex-core -E 'test(cross_provider_subagents) | test(subagent_model_provider) | test(multi_agent_message) | test(agent::role::tests) | test(model_picker) | test(mixed_catalog) | test(selected_model_routes) | test(routed_model_replaces) | test(apply_patch)' -j 3
           just test -p codex-app-server -E 'test(multi_agent_v2_developer_instructions) | test(thread_start_routes_model_picker_selection)' -j 3
       - name: Publish qualified candidate, preserving prior releases
