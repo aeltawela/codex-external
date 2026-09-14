@@ -43,6 +43,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch origin external/0.154.0-alpha.6.2
           source_sha=$(git rev-parse FETCH_HEAD)
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           release="$REQUESTED_TAG"
           if [[ -z "$release" ]]; then
             release=$(gh api 'repos/openai/codex/releases?per_page=100' --jq '[.[] | select(.tag_name | startswith("rust-v"))] | sort_by(.published_at) | last | .tag_name')
@@ -53,7 +54,7 @@ jobs:
           base=b5bffd3ec4db487e7e3dec59663875b0ef7b72ca
           # Release-stamping commits may be siblings rather than ancestors.
           # The fixed rebase base is explicit; tests gate every candidate.
-          qualified="external-qualified/${release#rust-v}"
+          qualified="external-qualified/${release#rust-v}/${source_sha:0:12}"
           if git ls-remote --exit-code --heads origin "$qualified" >/dev/null; then
             echo 'needed=false' >> "$GITHUB_OUTPUT"
             exit 0
@@ -86,15 +87,18 @@ jobs:
       - name: Test provider isolation and app-server agent support
         if: steps.candidate.outputs.needed == 'true'
         run: |
-          just test -p codex-core -E 'test(cross_provider_subagents) | test(subagent_model_provider) | test(multi_agent_message)' -j 3
+          just test -p codex-core -E 'test(cross_provider_subagents) | test(subagent_model_provider) | test(multi_agent_message) | test(agent::role::tests)' -j 3
           just test -p codex-app-server -E 'test(multi_agent_v2_developer_instructions)' -j 3
       - name: Publish qualified candidate, preserving prior releases
         if: steps.candidate.outputs.needed == 'true'
         env:
           QUALIFIED: ${{ steps.candidate.outputs.qualified }}
           PREVIOUS: ${{ steps.candidate.outputs.previous }}
+          SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
         run: |
           set -euo pipefail
+          source_now=$(git ls-remote --heads origin external/0.154.0-alpha.6.2 | cut -f1)
+          [[ "$source_now" == "$SOURCE_SHA" ]] || { echo 'Patch changed during qualification; rerun against new source.'; exit 1; }
           git add codex-rs/Cargo.lock
           if ! git diff --cached --quiet; then
             git commit -m 'Refresh release workspace versions in Cargo.lock'
