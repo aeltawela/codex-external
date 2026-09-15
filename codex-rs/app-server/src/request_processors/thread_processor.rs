@@ -5361,6 +5361,15 @@ impl ThreadRequestProcessor {
                 }
             }
             None if relation_filter.is_some() => None,
+            None if !self.config.model_provider_routes.is_empty() => {
+                // A mixed catalog must not hide chats from its other providers
+                // when a local or remote client omits the optional filter.
+                let mut providers = vec![self.config.model_provider_id.clone()];
+                providers.extend(self.config.model_provider_routes.values().cloned());
+                providers.sort();
+                providers.dedup();
+                Some(providers)
+            }
             None => Some(vec![self.config.model_provider_id.clone()]),
         };
         let (allowed_sources_vec, source_kind_filter) =

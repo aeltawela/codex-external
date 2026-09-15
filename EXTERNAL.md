@@ -29,6 +29,12 @@ resumable. Shared-task compatibility requires runtime verification.
 
 ## Qualification
 
+Mixed-catalog app-server chat lists default to the current provider plus all
+providers in `model_provider_routes`, so a remote client omitting the provider
+filter does not hide the other catalog's chats. Explicit filters, empty-filter
+all-provider requests, and single-provider defaults keep their existing behavior.
+This only changes listing; provider switching and history safeguards are unchanged.
+
 The mixed parent model catalog now uses `model_catalog_json` together with a
 `model_provider_routes` map from model ID to configured provider ID. Routes
 apply when creating or reopening a session, including app-server `thread/start`.
