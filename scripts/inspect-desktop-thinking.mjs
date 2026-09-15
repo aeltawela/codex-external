@@ -19,9 +19,17 @@ try {
     assert.ok(entry && !entry.unpacked, `Unsupported Desktop version: ${name}`);
     return readAt(base + Number(entry.offset), entry.size).toString();
   }
-  const initial = asset("app-initial-9b95fa538c62.js");
+  const profile = [
+    ["app-initial-9b95fa538c62.js", "app-primary-44ec287874b7.js"],
+    ["app-initial-4d7ea7f81c2d.js", "app-primary-4af6ed7f68d1.js"],
+  ].find(([initial, primary]) =>
+    header.files.webview.files.assets.files[initial] &&
+    header.files.webview.files.assets.files[primary],
+  );
+  assert.ok(profile, "Unsupported Desktop version: unknown picker assets");
+  const initial = asset(profile[0]);
   const settings = asset("src-996ff3571e1f.js");
-  const primary = asset("app-primary-44ec287874b7.js");
+  const primary = asset(profile[1]);
   const defaults = JSON.parse(
     settings.match(/Qy=(\[[^\]]+\])/)[1].replaceAll("`", '"'),
   );

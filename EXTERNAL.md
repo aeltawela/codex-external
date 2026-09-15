@@ -98,6 +98,18 @@ already-stalled turns automatically.
 
 ## Maintenance
 
+### Desktop 26.908.70816 (9275)
+
+The separate signed UI copy was refreshed from the installed official release.
+It still bundles core `0.154.0-alpha.6.2`; experimental app-server JSON schemas
+match the previous UI bundle and the patched external core exactly, so no core
+rebase was required. The external launcher keeps its name and points to the
+versioned UI copy while retaining the patched CLI, separate Electron data, shared
+Codex home, and disabled in-place UI updater. The prior UI is retained for rollback.
+The version-pinned picker characterization supports both UI asset sets; both
+pass the Max/None visibility checks. Runtime UI activation requires reopening the
+external launcher. This is not an end-to-end remote-connection certification.
+
 ### Thinking catalog and Desktop visibility (2026-09-15)
 
 `scripts/external-thinking.mjs` updates only the five external catalog entries:
