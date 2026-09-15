@@ -53,6 +53,85 @@ async fn resume_restores_windows_sandbox_override() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mixed_catalog_resumes_same_provider_opaque_reasoning() -> Result<()> {
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config.model_provider_id = "external".into();
+        config
+            .model_provider_routes
+            .insert(config.model.clone().unwrap(), "external".into());
+    });
+    let initial = builder.build_with_auto_env(&server).await?;
+    let mut reasoning = ev_reasoning_item("external-reason", &["summary"], &[]);
+    reasoning["item"]["encrypted_content"] =
+        serde_json::json!("opaque-state-from-external-provider");
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("first"),
+            reasoning,
+            ev_assistant_message("answer", "first answer"),
+            ev_completed("first"),
+        ]),
+    )
+    .await;
+    initial.submit_turn("first turn").await?;
+    let mut destination = test_codex().with_config(|config| {
+        config.model_provider_id = "external".into();
+        config
+            .model_provider_routes
+            .insert(config.model.clone().unwrap(), "external".into());
+    });
+    let resumed = destination.restart(&server, &initial).await?;
+    let request = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("second"),
+            ev_assistant_message("answer-2", "resumed answer"),
+            ev_completed("second"),
+        ]),
+    )
+    .await;
+    resumed.submit_turn("continue").await?;
+    assert!(
+        request
+            .single_request()
+            .body_contains_text("opaque-state-from-external-provider")
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mixed_catalog_rejects_unmapped_historical_model() -> Result<()> {
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config.model_provider_id = "external".into();
+    });
+    let initial = builder.build_with_auto_env(&server).await?;
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("first"),
+            ev_assistant_message("answer", "first answer"),
+            ev_completed("first"),
+        ]),
+    )
+    .await;
+    initial.submit_turn("first turn").await?;
+    let mut destination = test_codex().with_config(|config| {
+        config.model_provider_id = "external".into();
+        config
+            .model_provider_routes
+            .insert("other-model".into(), "external".into());
+    });
+    assert!(
+        destination.restart(&server, &initial).await.is_err(),
+        "unknown model provenance must not be assumed to belong to the current provider"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mixed_catalog_cannot_resume_openai_history_on_external_provider() -> Result<()> {
     let server = start_mock_server().await;
     let initial = test_codex().build_with_auto_env(&server).await?;

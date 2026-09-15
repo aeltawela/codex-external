@@ -708,22 +708,14 @@ impl Session {
                 previous_provider == Some(config.model_provider_id.as_str()),
                 "Changing providers to an external model requires a new chat; existing history was not sent."
             );
+            // Opaque reasoning and compaction state are not exclusive to OpenAI.
+            // Establish provenance from the session and every recorded turn instead
+            // of rejecting the external provider's own encrypted_content on resume.
             let has_foreign_history = initial_history.scan_rollout_items(|item| match item {
                 RolloutItem::TurnContext(turn) => config
                     .model_provider_routes
                     .get(&turn.model)
-                    .is_some_and(|provider| provider != &config.model_provider_id),
-                RolloutItem::ResponseItem(response) => matches!(
-                    &response.item,
-                    codex_protocol::models::ResponseItem::Reasoning {
-                        encrypted_content: Some(_),
-                        ..
-                    } | codex_protocol::models::ResponseItem::Compaction { .. }
-                        | codex_protocol::models::ResponseItem::ContextCompaction {
-                            encrypted_content: Some(_),
-                            ..
-                        }
-                ),
+                    .is_none_or(|provider| provider != &config.model_provider_id),
                 _ => false,
             });
             anyhow::ensure!(
