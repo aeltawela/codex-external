@@ -445,6 +445,67 @@ async fn thread_list_pagination_next_cursor_none_on_last_page() -> Result<()> {
 }
 
 #[tokio::test]
+async fn thread_list_mixed_catalog_defaults_to_routed_providers() -> Result<()> {
+    for default_provider in ["openai", "external"] {
+        let codex_home = TempDir::new()?;
+        fs::write(
+            codex_home.path().join("config.toml"),
+            format!(
+                r#"
+model = "mock-model"
+model_provider = "{default_provider}"
+model_provider_routes = {{ "external-model" = "external", "openai-model" = "openai" }}
+[model_providers.external]
+name = "External test"
+base_url = "http://127.0.0.1:1/v1"
+wire_api = "responses"
+"#
+            ),
+        )?;
+        for (timestamp, provider) in [
+            ("2025-01-02T10:00:00Z", "openai"),
+            ("2025-01-02T11:00:00Z", "external"),
+            ("2025-01-02T12:00:00Z", "unrelated"),
+        ] {
+            create_fake_rollout(
+                codex_home.path(),
+                &timestamp.trim_end_matches('Z').replace(':', "-"),
+                timestamp,
+                "Mixed catalog test",
+                Some(provider),
+                /*git_info*/ None,
+            )?;
+        }
+        let mut mcp = init_mcp(codex_home.path()).await?;
+        for (filter, expected) in [
+            (None, vec!["external", "openai"]),
+            (Some(vec!["openai".to_string()]), vec!["openai"]),
+            (Some(vec!["external".to_string()]), vec!["external"]),
+            (Some(Vec::new()), vec!["external", "openai", "unrelated"]),
+        ] {
+            let result = list_threads(
+                &mut mcp,
+                /*cursor*/ None,
+                Some(10),
+                filter,
+                /*source_kinds*/ None,
+                /*archived*/ None,
+            )
+            .await?;
+            let mut providers: Vec<_> = result
+                .data
+                .iter()
+                .map(|thread| thread.model_provider.as_str())
+                .collect();
+            providers.sort();
+            assert_eq!(providers, expected, "default provider: {default_provider}");
+            assert_eq!(result.next_cursor, None);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_list_respects_provider_filter() -> Result<()> {
     let codex_home = TempDir::new()?;
     create_minimal_config(codex_home.path())?;
