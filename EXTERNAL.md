@@ -35,8 +35,12 @@ apply when creating or reopening a session, including app-server `thread/start`.
 Unsupported inherited effort falls back to the selected model's catalog default.
 Mapped external models disable the unsupported hosted web-search declaration.
 Existing live sessions cannot change providers. Reopening external history on
-OpenAI is supported; returning OpenAI or opaque provider state to external
-models is rejected before inference. This is not encryption/decryption support.
+OpenAI is supported; returning OpenAI history to external models is rejected
+before inference. Same-provider opaque reasoning is preserved on resume: an
+`encrypted_content` field alone does not identify OpenAI state. External resume
+requires matching session provenance and all historical turn models mapped to
+that provider; unknown or foreign historical models are rejected. This is not
+encryption/decryption support.
 
 Picker qualification on 2026-09-14: 536 focused core unit tests and eight
 provider/history integration tests passed, plus the app-server picker routing
