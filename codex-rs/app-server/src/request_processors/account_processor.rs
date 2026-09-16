@@ -1038,13 +1038,19 @@ impl AccountRequestProcessor {
 
         self.refresh_token_if_requested(do_refresh).await;
 
-        // Determine whether auth is required based on the active model provider.
-        // If a custom provider is configured with `requires_openai_auth == false`,
-        // then no auth step is required; otherwise, default to requiring auth.
+        // In a mixed catalog, Desktop's account services still use the ChatGPT
+        // login when inference is routed to an external provider. Keep account
+        // visibility separate from whether that provider requires a login.
         let config = self.load_latest_config().await;
         let requires_openai_auth = config.model_provider.requires_openai_auth;
+        let show_mixed_catalog_account = !config.model_provider_routes.is_empty()
+            && !config.model_provider.is_amazon_bedrock()
+            && !matches!(
+                self.auth_manager.auth_cached(),
+                Some(CodexAuth::BedrockApiKey(_) | CodexAuth::BedrockAccessKeys(_))
+            );
 
-        let response = if !requires_openai_auth {
+        let response = if !requires_openai_auth && !show_mixed_catalog_account {
             GetAuthStatusResponse {
                 auth_method: None,
                 auth_token: None,
@@ -1089,13 +1095,13 @@ impl AccountRequestProcessor {
                     GetAuthStatusResponse {
                         auth_method: reported_auth_method,
                         auth_token: token_opt,
-                        requires_openai_auth: Some(true),
+                        requires_openai_auth: Some(requires_openai_auth),
                     }
                 }
                 None => GetAuthStatusResponse {
                     auth_method: None,
                     auth_token: None,
-                    requires_openai_auth: Some(true),
+                    requires_openai_auth: Some(requires_openai_auth),
                 },
             }
         };
@@ -1112,8 +1118,23 @@ impl AccountRequestProcessor {
         self.refresh_token_if_requested(do_refresh).await;
 
         let config = self.load_latest_config().await;
-        let provider =
-            create_model_provider(config.model_provider, Some(self.auth_manager.clone()));
+        // Bedrock has its own account representation and managed credentials.
+        let show_mixed_catalog_account = !config.model_provider_routes.is_empty()
+            && !config.model_provider.is_amazon_bedrock()
+            && !matches!(
+                self.auth_manager.auth_cached(),
+                Some(CodexAuth::BedrockApiKey(_) | CodexAuth::BedrockAccessKeys(_))
+            );
+        let requires_openai_auth = config.model_provider.requires_openai_auth;
+        // This provider is used only to read account metadata, never for an
+        // inference request. Do not alter the external provider's credentials.
+        let account_provider = config
+            .model_providers
+            .get("openai")
+            .filter(|_| show_mixed_catalog_account)
+            .cloned()
+            .unwrap_or(config.model_provider);
+        let provider = create_model_provider(account_provider, Some(self.auth_manager.clone()));
         let account_state = match provider.account_state() {
             Ok(account_state) => account_state,
             Err(err) => return Err(invalid_request(err.to_string())),
@@ -1122,7 +1143,11 @@ impl AccountRequestProcessor {
 
         Ok(GetAccountResponse {
             account,
-            requires_openai_auth: account_state.requires_openai_auth,
+            requires_openai_auth: if show_mixed_catalog_account {
+                requires_openai_auth
+            } else {
+                account_state.requires_openai_auth
+            },
         })
     }
 

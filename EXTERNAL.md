@@ -98,6 +98,41 @@ already-stalled turns automatically.
 
 ## Maintenance
 
+### Desktop account services and browser control
+
+With a mixed provider catalog, `getAuthStatus` and `account/read` retain the
+existing OpenAI account identity when an external inference model is selected.
+The external provider still does not require OpenAI authentication: signed-out
+external use remains possible, and inference continues to use only the external
+provider's credentials. Single-provider behavior and Bedrock's provider-owned
+account representation are preserved. Token export and permanent-refresh-failure
+safeguards are unchanged. This addresses Desktop plugin-connection requests made
+without an access token after selecting an Ollama model.
+
+Qualification on 2026-09-17: all 67 app-server account/authentication tests passed,
+including mixed-catalog identity visibility, signed-out and single-provider
+behavior, external inference credential isolation, and active/saved Bedrock
+credential cases. The regressions were observed failing before their fixes.
+Scoped Clippy, formatting, and the CLI build passed. Live backend reads retained
+the ChatGPT account/token with both GPT and DeepSeek selected, without making an
+inference request. A direct connector HTTP probe returned 403 under both models;
+the plugin connection UI still needs a retry in the restarted Desktop app.
+This is not an end-to-end plugin certification.
+
+Run account regression checks without inheriting the launcher's user-config
+override: `env -u CODEX_APP_SERVER_TEST_USER_CONFIG_FILE just test -p codex-app-server -E 'test(suite::auth::) | test(suite::v2::account::)'`.
+
+Browser control is **not supported by this locally built Desktop backend** in
+Desktop 26.908.70816 (9275). The packaged native browser bridge authenticates the
+socket peer and its parent/grandparent code-signing identities. The locally built
+backend has an ad-hoc signature, so it produces `missing-code-signing-identity`
+even with the unchanged, officially signed Node helpers. Replacing only the
+code-mode companion cannot satisfy that ancestry check. The official signed
+backend is required for that trusted integration; using it also removes this
+fork's native external-provider routing from Desktop. Do not disable or spoof
+peer verification. A successful inference or picker test does not qualify browser
+control or every Desktop plugin/tool integration.
+
 ### Desktop 26.908.70816 (9275)
 
 The separate signed UI copy was refreshed from the installed official release.
