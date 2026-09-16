@@ -77,8 +77,15 @@ impl AccountRequestProcessor {
                 Err(_) => return Err(internal_error("failed to load workspace requirements")),
             };
             let auth = self.auth_manager.auth_cached();
+            // Account identity is separate from the provider used for inference.
+            let show_mixed_catalog_account = !config.model_provider_routes.is_empty()
+                && !config.model_provider.is_amazon_bedrock()
+                && !matches!(auth, Some(CodexAuth::BedrockApiKey(_) | CodexAuth::BedrockAccessKeys(_)));
+            let account_provider = config.model_providers.get("openai")
+                .filter(|_| show_mixed_catalog_account)
+                .cloned().unwrap_or_else(|| config.model_provider.clone());
             let provider = create_model_provider(
-                config.model_provider.clone(),
+                account_provider,
                 Some(self.auth_manager.clone()),
             );
             let account_state = provider
@@ -180,7 +187,11 @@ impl AccountRequestProcessor {
             };
             Ok(GetAccountResponse {
                 account,
-                requires_openai_auth: account_state.requires_openai_auth,
+                requires_openai_auth: if show_mixed_catalog_account {
+                    config.model_provider.requires_openai_auth
+                } else {
+                    account_state.requires_openai_auth
+                },
                 workspace_routing,
             })
         });

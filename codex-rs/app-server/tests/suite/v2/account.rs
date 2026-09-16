@@ -3155,16 +3155,30 @@ region = "us-west-2"
     Ok(())
 }
 
+#[test_case::test_case("amazon-bedrock", false; "single provider")]
+#[test_case::test_case("amazon-bedrock", true; "mixed catalog")]
+#[test_case::test_case("mock_provider", true; "external provider with saved bedrock credentials")]
 #[tokio::test]
-async fn get_account_with_managed_bedrock_provider() -> Result<()> {
+async fn get_account_with_managed_bedrock_provider(
+    provider_id: &str,
+    mixed_catalog: bool,
+) -> Result<()> {
     let codex_home = TempDir::new()?;
     create_config_toml(
         codex_home.path(),
         CreateConfigTomlParams {
-            model_provider_id: Some("amazon-bedrock".to_string()),
+            model_provider_id: Some(provider_id.to_string()),
             ..Default::default()
         },
     )?;
+    if mixed_catalog {
+        let config_path = codex_home.path().join("config.toml");
+        let config = std::fs::read_to_string(&config_path)?;
+        std::fs::write(
+            config_path,
+            format!("model_provider_routes = {{ \"gpt-test\" = \"openai\" }}\n{config}"),
+        )?;
+    }
     login_with_bedrock_api_key(
         codex_home.path(),
         "managed-bedrock-api-key",
@@ -3191,7 +3205,7 @@ async fn get_account_with_managed_bedrock_provider() -> Result<()> {
         received,
         GetAccountResponse {
             workspace_routing: None,
-            account: Some(Account::AmazonBedrock {
+            account: (provider_id == "amazon-bedrock").then_some(Account::AmazonBedrock {
                 uses_codex_managed_credentials: true,
             }),
             requires_openai_auth: false,

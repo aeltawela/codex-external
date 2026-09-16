@@ -16,10 +16,15 @@ use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadStartParams;
+use codex_app_server_protocol::TurnStartParams;
+use codex_app_server_protocol::TurnStartResponse;
+use codex_app_server_protocol::UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_features::Feature;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_protocol::account::PlanType as AccountPlanType;
+use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use std::path::Path;
 use tempfile::TempDir;
@@ -266,6 +271,153 @@ async fn get_auth_status_with_api_key_when_auth_not_required() -> Result<()> {
         status.requires_openai_auth,
         Some(false),
         "requires_openai_auth should be false",
+    );
+    Ok(())
+}
+
+#[test_case::test_case(true, true, true; "mixed signed in")]
+#[test_case::test_case(true, true, false; "mixed metadata only")]
+#[test_case::test_case(true, false, true; "mixed signed out")]
+#[test_case::test_case(false, true, true; "single provider")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_auth_is_independent_of_mixed_catalog_inference_provider(
+    mixed_catalog: bool,
+    signed_in: bool,
+    include_token: bool,
+) -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut config = MockResponsesConfig::new("http://127.0.0.1:0")
+        .with_root_config("cli_auth_credentials_store = \"file\"");
+    if mixed_catalog {
+        config = config.with_root_config(
+            "model_provider_routes = { \"mock-model\" = \"mock_provider\", \"gpt-test\" = \"openai\" }",
+        );
+    }
+    config.write(codex_home.path())?;
+    if signed_in {
+        write_chatgpt_auth(
+            codex_home.path(),
+            ChatGptAuthFixture::new("chatgpt-account-token")
+                .account_id("acct_test")
+                .email("user@example.com")
+                .plan_type("pro"),
+            AuthCredentialsStoreMode::File,
+        )?;
+    }
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+
+    let request_id = mcp
+        .send_get_auth_status_request(GetAuthStatusParams {
+            include_token: Some(include_token),
+            refresh_token: Some(false),
+        })
+        .await?;
+    let status: GetAuthStatusResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+    let expose_account = mixed_catalog && signed_in;
+    assert_eq!(
+        status,
+        GetAuthStatusResponse {
+            auth_method: expose_account.then_some(AuthMode::Chatgpt),
+            auth_token: (expose_account && include_token)
+                .then(|| "chatgpt-account-token".to_string()),
+            // An account is optional for the external inference provider.
+            requires_openai_auth: Some(false),
+        }
+    );
+
+    let request_id = mcp
+        .send_get_account_request(GetAccountParams {
+            refresh_token: false,
+        })
+        .await?;
+    let account: GetAccountResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+    assert_eq!(
+        account,
+        GetAccountResponse {
+            account: expose_account.then(|| Account::Chatgpt {
+                email: Some("user@example.com".to_string()),
+                plan_type: AccountPlanType::Pro,
+            }),
+            requires_openai_auth: false,
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn mixed_catalog_account_auth_does_not_leak_into_external_inference() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("resp-external")]),
+    )
+    .await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .with_root_config("cli_auth_credentials_store = \"file\"")
+        .with_root_config("model_provider_routes = { \"mock-model\" = \"mock_provider\" }")
+        .with_provider_config("env_key = \"EXTERNAL_TEST_KEY\"")
+        .write(codex_home.path())?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("chatgpt-account-token")
+            .account_id("acct_test")
+            .email("user@example.com")
+            .plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_env_overrides(&[("EXTERNAL_TEST_KEY", Some("external-provider-token"))])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    let request_id = mcp
+        .send_get_auth_status_request(GetAuthStatusParams {
+            include_token: Some(true),
+            refresh_token: Some(false),
+        })
+        .await?;
+    let status: GetAuthStatusResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+    assert_eq!(status.auth_token, Some("chatgpt-account-token".to_string()));
+
+    let response = mcp.start_thread(ThreadStartParams::default()).await?;
+    assert_eq!(response.model_provider, "mock_provider");
+    let request_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: response.thread.id,
+            input: vec![UserInput::Text {
+                text: "Hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let _: TurnStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+    let request = response_mock.single_request();
+    assert_eq!(
+        request.header("authorization"),
+        Some("Bearer external-provider-token".to_string())
+    );
+    assert_eq!(request.header("chatgpt-account-id"), None);
+    assert!(
+        !request
+            .body_json()
+            .to_string()
+            .contains("chatgpt-account-token")
     );
     Ok(())
 }
