@@ -37,6 +37,10 @@ pub(super) const RECAP_DELAY: Duration = Duration::from_secs(/*secs*/ 3 * 60);
 const RECAP_HISTORY_MAX_TURNS: usize = 8;
 const RECAP_MAX_CHARS: usize = 320;
 const RECAP_RETRY_DELAY: Duration = Duration::from_secs(/*secs*/ 30);
+/// Maximum automatic recap attempts (initial + retries) per turn revision.
+/// A permanently failing recap (for example a provider that never returns the
+/// structured recap JSON payload) must not re-request forever.
+const MAX_AUTOMATIC_RECAP_ATTEMPTS: usize = 3;
 const MANUAL_RECAP_FAILURE_MESSAGE: &str = "Could not generate a recap. Please try again.";
 const MANUAL_RECAP_IN_PROGRESS_MESSAGE: &str = "A recap is already being generated.";
 const MANUAL_RECAP_EMPTY_HISTORY_MESSAGE: &str = "There is no conversation history to recap.";
@@ -267,6 +271,13 @@ impl App {
                     .add_error_message(MANUAL_RECAP_EMPTY_HISTORY_MESSAGE.to_string());
             }
             return;
+        }
+
+        if matches!(trigger, RecapTrigger::Automatic) {
+            if self.recap.automatic_attempts >= MAX_AUTOMATIC_RECAP_ATTEMPTS {
+                return;
+            }
+            self.recap.automatic_attempts += 1;
         }
 
         if matches!(trigger, RecapTrigger::Manual) {
@@ -506,6 +517,7 @@ pub(super) struct RecapState {
     turn_revision: usize,
     scheduled_check: Option<JoinHandle<()>>,
     retry_revision: Option<usize>,
+    automatic_attempts: usize,
     in_flight_request_id: Option<Uuid>,
     in_flight_trigger: Option<RecapTrigger>,
     in_flight_thread_id: Option<ThreadId>,
@@ -575,6 +587,7 @@ impl RecapState {
         }
         self.turn_revision += 1;
         self.last_turn_finished_at = Some(now);
+        self.automatic_attempts = 0;
     }
 
     pub(super) fn schedule_retry(
