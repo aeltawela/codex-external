@@ -974,6 +974,9 @@ pub struct Config {
     /// Provider ownership of models in the configured mixed catalog.
     pub model_provider_routes: BTreeMap<String, String>,
 
+    /// Whether optional background helpers may start OpenAI inference.
+    pub allow_automatic_openai_inference: bool,
+
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
 
@@ -4301,6 +4304,13 @@ impl Config {
             model_reasoning_summary: cfg.model_reasoning_summary,
             model_catalog,
             model_provider_routes: cfg.model_provider_routes,
+            // Headless Desktop helpers ignore user config and supply their own
+            // CLI overrides. Keep the separate launcher's default across those
+            // entry points, while honoring an explicit config opt-in.
+            allow_automatic_openai_inference: cfg.allow_automatic_openai_inference.unwrap_or_else(|| {
+                !std::env::var("CODEX_DISABLE_AUTOMATIC_OPENAI_INFERENCE")
+                    .is_ok_and(|value| value == "1")
+            }),
             model_verbosity: cfg.model_verbosity,
             chatgpt_base_url: cfg
                 .chatgpt_base_url

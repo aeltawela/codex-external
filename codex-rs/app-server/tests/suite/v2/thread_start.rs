@@ -25,6 +25,7 @@ use codex_app_server_protocol::SandboxPolicy;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::TextPosition;
 use codex_app_server_protocol::TextRange;
+use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
@@ -69,6 +70,162 @@ use super::analytics::wait_for_analytics_payload;
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 const EXEC_POLICY_PARSE_WARNING_SUMMARY: &str = "Error parsing rules; custom rules not applied.";
+
+#[test_case::test_case(false; "config_file")]
+#[test_case::test_case(true; "launcher_environment")]
+#[tokio::test]
+async fn automatic_openai_policy_blocks_helpers_but_preserves_user_choices(
+    launcher_environment: bool,
+) -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let endpoint = MockServer::start().await;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+model = "external-test"
+model_provider = "external"
+{policy}
+openai_base_url = "{url}"
+model_provider_routes = {{ "gpt-5.6-luna" = "openai", "external-test" = "external" }}
+[model_providers.external]
+name = "External test"
+base_url = "{url}"
+wire_api = "responses"
+[model_providers.openai-memgen]
+name = "History test"
+base_url = "{url}"
+wire_api = "responses"
+"#,
+            url = endpoint.uri(),
+            policy = if launcher_environment {
+                ""
+            } else {
+                "allow_automatic_openai_inference = false"
+            },
+        ),
+    )?;
+    let mut server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_env_overrides(&[(
+            "CODEX_DISABLE_AUTOMATIC_OPENAI_INFERENCE",
+            launcher_environment.then_some("1"),
+        )])
+        .build_initialized()
+        .await?;
+
+    // The route table resolves this to OpenAI despite the external default.
+    for source in ["ambient_suggestion_safety", "commit_message", "system"] {
+        let request_id = server
+            .send_thread_start_request(ThreadStartParams {
+                model: Some("gpt-5.6-luna".into()),
+                thread_source: Some(ThreadSource::Feature(source.into())),
+                ephemeral: Some(true),
+                allow_provider_model_fallback: true,
+                ..Default::default()
+            })
+            .await?;
+        let result = server
+            .read_stream_until_error_message(RequestId::Integer(request_id))
+            .await?;
+        assert!(
+            result
+                .error
+                .message
+                .contains("automatic OpenAI inference is disabled"),
+            "OpenAI helper {source} must be rejected before inference"
+        );
+    }
+
+    // Chronicle uses its own provider, even without helper metadata.
+    let request_id = server
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("history-test".into()),
+            model_provider: Some("openai-memgen".into()),
+            ..Default::default()
+        })
+        .await?;
+    let result = server
+        .read_stream_until_error_message(RequestId::Integer(request_id))
+        .await?;
+    assert!(
+        result
+            .error
+            .message
+            .contains("automatic OpenAI inference is disabled")
+    );
+
+    for source in [ThreadSource::User, ThreadSource::Subagent] {
+        let response = server
+            .start_thread(ThreadStartParams {
+                model: Some("gpt-5.6-luna".into()),
+                thread_source: Some(source),
+                ..Default::default()
+            })
+            .await?;
+        assert_eq!(response.model_provider, "openai");
+        if response.thread.thread_source == Some(ThreadSource::User) {
+            let source_thread = app_test_support::create_fake_rollout(
+                codex_home.path(),
+                "2025-01-05T12-00-00",
+                "2025-01-05T12:00:00Z",
+                "Saved user message",
+                Some("openai"),
+                /*git_info*/ None,
+            )?;
+            let request_id = server
+                .send_thread_fork_request(ThreadForkParams {
+                    thread_id: source_thread,
+                    model: Some("gpt-5.6-luna".into()),
+                    thread_source: Some(ThreadSource::Feature("recap".into())),
+                    ephemeral: true,
+                    ..Default::default()
+                })
+                .await?;
+            let result = server
+                .read_stream_until_error_message(RequestId::Integer(request_id))
+                .await?;
+            assert!(
+                result
+                    .error
+                    .message
+                    .contains("automatic OpenAI inference is disabled")
+            );
+        }
+    }
+    let response = server
+        .start_thread(ThreadStartParams {
+            model: Some("external-test".into()),
+            thread_source: Some(ThreadSource::Feature("system".into())),
+            ephemeral: Some(true),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(response.model_provider, "external");
+    // An explicit opt-in restores upstream helper behavior.
+    let response = server
+        .start_thread(ThreadStartParams {
+            model: Some("gpt-5.6-luna".into()),
+            thread_source: Some(ThreadSource::Feature("system".into())),
+            ephemeral: Some(true),
+            config: Some(std::collections::HashMap::from([(
+                "allow_automatic_openai_inference".into(),
+                json!(true),
+            )])),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(response.model_provider, "openai");
+    assert!(
+        endpoint
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|request| request.method != "POST")
+    );
+    Ok(())
+}
 
 fn is_exec_policy_config_warning(notification: &JSONRPCNotification) -> bool {
     notification.method == "configWarning"

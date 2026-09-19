@@ -29,6 +29,46 @@ resumable. Shared-task compatibility requires runtime verification.
 
 ## Qualification
 
+### Optional OpenAI background inference
+
+Set `allow_automatic_openai_inference = false` in the external profile. The
+external launcher additionally exports
+`CODEX_DISABLE_AUTOMATIC_OPENAI_INFERENCE=1` before launching the backend, as
+the default when no explicit policy setting exists. Computer History invokes
+`exec --ignore-user-config`, and root-level `-c` options can be lost when a CLI
+subcommand has its own overrides. The inherited default covers both cases.
+Without this environment variable or a config setting, upstream behavior
+remains unchanged. The normal launcher and official installation are untouched.
+
+When disabled, resolved OpenAI-provider ephemeral feature sessions (including
+forked helpers), memory consolidation sessions, and the dedicated
+`openai-memgen` history provider are rejected before session initialization.
+Optional memory-generation startup jobs using OpenAI are skipped too. Normal
+user chats and explicitly selected subagents remain available, including GPT.
+External-provider helpers keep their existing provider; unsupported helpers are
+skipped rather than silently rerouted. In particular, a blocked ambient-safety
+classifier must not be replaced with an unverified classifier or bypassed.
+
+This policy also skips OpenAI helpers accompanying a deliberately selected GPT
+chat in the external app. To opt back in, explicitly pass
+`-c allow_automatic_openai_inference=true` after the subcommand (or set it in
+the external profile). Account login, connector credentials,
+existing memories, and Computer History capture settings are not changed.
+The policy applies to new helper launches through this backend, not already
+running sessions or an independent official-app history process. Restart the
+external app to load an updated backend. This is not an account-wide spending
+cap, and does not claim that all background requests are billed credits.
+
+Qualification on 2026-09-19: 515 focused checks passed across app-server,
+configuration, provider/history routing, memory admission, and TUI recaps.
+The new regression reproduced unwanted OpenAI helper admission before the fix.
+Both config-file and launcher-environment policies are covered, including the
+routed provider, forked helpers, the history provider, explicit
+GPT chats/subagents, external helpers, and explicit policy opt-in without
+issuing inference. The user's recap-attempt cap remains unchanged.
+For an installed-launcher smoke check with an isolated home and loopback
+endpoint, run `node scripts/check-automatic-openai-policy.mjs /path/to/codex-external`.
+
 Mixed-catalog app-server chat lists default to the current provider plus all
 providers in `model_provider_routes`, so a remote client omitting the provider
 filter does not hide the other catalog's chats. Explicit filters, empty-filter

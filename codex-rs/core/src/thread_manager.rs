@@ -1949,6 +1949,27 @@ impl ThreadManagerState {
             client_mcp_extensions,
             reserved_thread_id,
         } = options;
+        // Desktop's optional helpers can explicitly request a GPT model even in
+        // an external-provider profile. Check the resolved provider, not the
+        // profile default, and cover forks as well as fresh sessions. Never
+        // substitute an unqualified model for a safety classifier.
+        let automatic_helper = (config.ephemeral
+            && matches!(thread_source.as_ref(), Some(ThreadSource::Feature(_))))
+            || matches!(
+                thread_source.as_ref(),
+                Some(ThreadSource::MemoryConsolidation)
+            )
+            || config.model_provider_id == "openai-memgen";
+        let openai_provider = config.model_provider.requires_openai_auth
+            || matches!(
+                config.model_provider_id.as_str(),
+                "openai" | "openai-memgen"
+            );
+        if !config.allow_automatic_openai_inference && automatic_helper && openai_provider {
+            return Err(CodexErr::InvalidRequest(
+                "automatic OpenAI inference is disabled; this optional helper was skipped. Explicit OpenAI chats and subagents remain available".to_string(),
+            ));
+        }
         let session_source = session_source.unwrap_or_else(|| self.session_source.clone());
         let environments = environments.unwrap_or_else(|| {
             default_thread_environment_selections(
