@@ -7,6 +7,16 @@ use tracing::info;
 use tracing::warn;
 
 pub(crate) async fn rate_limits_ok(auth_manager: &AuthManager, config: &Config) -> bool {
+    if !config.allow_automatic_openai_inference
+        && (config.model_provider.requires_openai_auth
+            || matches!(
+                config.model_provider_id.as_str(),
+                "openai" | "openai-memgen"
+            ))
+    {
+        info!("skipping memory startup because automatic OpenAI inference is disabled");
+        return false;
+    }
     rate_limits_check(auth_manager, config)
         .await
         .unwrap_or(true)

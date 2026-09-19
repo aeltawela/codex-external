@@ -391,6 +391,10 @@ pub struct ConfigToml {
     #[serde(default)]
     pub model_provider_routes: BTreeMap<String, String>,
 
+    /// Allow optional background helpers to use OpenAI inference (default: true).
+    /// Does not restrict user chats or explicitly selected subagents.
+    pub allow_automatic_openai_inference: Option<bool>,
+
     /// Deprecated: `friendly` and `pragmatic` no longer select a style.
     pub personality: Option<Personality>,
 

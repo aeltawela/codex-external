@@ -1,6 +1,31 @@
 use super::*;
 use codex_protocol::protocol::RateLimitReachedType;
 
+#[tokio::test]
+async fn automatic_openai_policy_skips_memory_jobs_without_disabling_external_jobs()
+-> anyhow::Result<()> {
+    use codex_core::config::ConfigBuilder;
+
+    let home = tempfile::tempdir()?;
+    let auth = AuthManager::from_auth_for_testing(codex_login::CodexAuth::from_api_key("test-key"));
+    std::fs::write(
+        home.path().join("config.toml"),
+        "allow_automatic_openai_inference = false",
+    )?;
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .build()
+        .await?;
+    assert!(!rate_limits_ok(&auth, &config).await);
+    config.model_provider_id = "external".into();
+    config.model_provider.requires_openai_auth = false;
+    assert!(rate_limits_ok(&auth, &config).await);
+    config.model_provider.requires_openai_auth = true;
+    config.allow_automatic_openai_inference = true;
+    assert!(rate_limits_ok(&auth, &config).await);
+    Ok(())
+}
+
 fn snapshot(
     primary_used_percent: Option<f64>,
     secondary_used_percent: Option<f64>,
