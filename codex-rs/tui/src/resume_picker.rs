@@ -665,7 +665,9 @@ fn local_picker_cwd_filter(
 }
 
 fn picker_provider_filter(config: &Config, uses_remote_workspace: bool) -> ProviderFilter {
-    if uses_remote_workspace {
+    // Let the app-server apply the configured provider routes instead of hiding
+    // existing tasks whenever the mixed-provider default changes.
+    if uses_remote_workspace || !config.model_provider_routes.is_empty() {
         ProviderFilter::Any
     } else {
         ProviderFilter::MatchDefault(config.model_provider_id.to_string())
@@ -4279,6 +4281,40 @@ mod tests {
         let first_index = rendered.find(first).expect("first metadata item");
         let second_index = rendered.find(second).expect("second metadata item");
         assert!(first_index < second_index);
+    }
+
+    #[tokio::test]
+    async fn routed_picker_does_not_hide_other_providers() {
+        let root = tempfile::TempDir::new().unwrap();
+        let mut config = crate::legacy_core::config::ConfigBuilder::default()
+            .codex_home(root.path().to_path_buf())
+            .build()
+            .await
+            .unwrap();
+        config.model_provider_id = "ollama_cloud".to_string();
+        for (routed, remote, expected) in [
+            (false, false, Some(vec!["ollama_cloud".to_string()])),
+            (false, true, None),
+            (true, false, None),
+            (true, true, None),
+        ] {
+            config.model_provider_routes.clear();
+            if routed {
+                config
+                    .model_provider_routes
+                    .insert("gpt-6-astra".into(), "openai".into());
+            }
+            let params = thread_list_params(
+                None,
+                Some(ThreadListCwdFilter::One("/repo".into())),
+                SessionStatus::Active,
+                picker_provider_filter(&config, remote),
+                ThreadSortKey::UpdatedAt,
+                /*include_non_interactive*/ false,
+                /*use_state_db_only*/ true,
+            );
+            assert_eq!(params.model_providers, expected);
+        }
     }
 
     #[test]

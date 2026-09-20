@@ -29,6 +29,13 @@ resumable. Shared-task compatibility requires runtime verification.
 
 ## Qualification
 
+### CLI mixed-provider resume picker
+
+When model routing is configured, the CLI resume/fork picker leaves the provider
+filter to the app-server's mixed catalog instead of pinning it to the current
+default provider. Cwd, archive, and interactive-source filters remain intact.
+This changes task discovery only, not history portability or resume safeguards.
+
 ### Side-chat provider inheritance
 
 With model routing enabled, a fork that omits both model and provider inherits
