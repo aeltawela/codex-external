@@ -4928,6 +4928,31 @@ impl ThreadRequestProcessor {
         };
         let history_cwd = Some(source_thread.cwd.clone());
 
+        // Desktop side chats omit model/provider. In routed configurations,
+        // preserve the parent's selection instead of applying a global default
+        // that could move its history to another provider. Explicit selections
+        // still go through the normal routing and history-safety checks.
+        let inherit_parent_model = !self.config.model_provider_routes.is_empty()
+            && model.is_none()
+            && model_provider.is_none()
+            && cli_overrides.as_ref().is_none_or(|overrides| {
+                !overrides.contains_key("model") && !overrides.contains_key("model_provider")
+            });
+        let (model, model_provider) = if inherit_parent_model {
+            let parent_model = source_thread.model.clone().or_else(|| {
+                source_history_items
+                    .iter()
+                    .rev()
+                    .find_map(|item| match item {
+                        RolloutItem::TurnContext(context) => Some(context.model.clone()),
+                        _ => None,
+                    })
+            });
+            (parent_model, Some(source_thread.model_provider.clone()))
+        } else {
+            (model, model_provider)
+        };
+
         // Persist Windows sandbox mode.
         let mut cli_overrides = cli_overrides.unwrap_or_default();
         if cfg!(windows) {
