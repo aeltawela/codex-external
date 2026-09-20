@@ -119,6 +119,122 @@ async fn list_threads(mcp: &mut TestAppServer) -> Result<ThreadListResponse> {
     to_response::<ThreadListResponse>(list_resp)
 }
 
+#[test_case::test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case::test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test]
+async fn routed_side_chat_inherits_parent_instead_of_external_default(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    // Side chats omit model/provider. A different global default must not move
+    // their inherited history across providers; explicit choices still apply.
+    let endpoint = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+model = "external-test"
+model_provider = "external"
+allow_automatic_openai_inference = false
+openai_base_url = "{url}/v1"
+model_provider_routes = {{ "gpt-5.6-luna" = "openai", "gpt-5.6-sol" = "openai", "external-test" = "external" }}
+[model_providers.external]
+name = "External test"
+base_url = "{url}/v1"
+wire_api = "responses"
+"#,
+            url = endpoint.uri(),
+        ),
+    )?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("test-only-token"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let parent = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("gpt-5.6-luna".into()),
+            history_mode: Some(history_mode),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(parent.model_provider, "openai");
+    let turn_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: parent.thread.id.clone(),
+            input: vec![UserInput::Text {
+                text: "parent context".into(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let _: TurnStartResponse = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(turn_id)).await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    for ephemeral in [false, true] {
+        let request = mcp
+            .send_thread_fork_request(ThreadForkParams {
+                thread_id: parent.thread.id.clone(),
+                thread_source: Some(ThreadSource::User),
+                ephemeral,
+                exclude_turns: true,
+                ..Default::default()
+            })
+            .await?;
+        let fork: ThreadForkResponse =
+            timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request)).await??;
+        assert_eq!(fork.model_provider, "openai");
+        assert_eq!(fork.model, "gpt-5.6-luna");
+    }
+    let request = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: parent.thread.id.clone(),
+            model: Some("gpt-5.6-sol".into()),
+            exclude_turns: true,
+            ..Default::default()
+        })
+        .await?;
+    let fork: ThreadForkResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request)).await??;
+    assert_eq!(fork.model, "gpt-5.6-sol");
+    assert_eq!(fork.model_provider, "openai");
+
+    for config_override in [false, true] {
+        let request = mcp
+            .send_thread_fork_request(ThreadForkParams {
+                thread_id: parent.thread.id.clone(),
+                model: (!config_override).then(|| "external-test".into()),
+                config: config_override.then(|| {
+                    std::collections::HashMap::from([("model".into(), json!("external-test"))])
+                }),
+                exclude_turns: true,
+                ..Default::default()
+            })
+            .await?;
+        let error = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_error_message(RequestId::Integer(request)),
+        )
+        .await??;
+        assert!(
+            error
+                .error
+                .message
+                .contains("Changing providers to an external model requires a new chat")
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn thread_fork_creates_new_thread_and_emits_started() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;

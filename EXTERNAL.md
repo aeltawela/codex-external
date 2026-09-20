@@ -29,6 +29,15 @@ resumable. Shared-task compatibility requires runtime verification.
 
 ## Qualification
 
+### Side-chat provider inheritance
+
+With model routing enabled, a fork that omits both model and provider inherits
+the parent's stored selection. Desktop side chats use this request shape; they
+must not apply a newly changed global default to an existing task's history.
+Explicit model/provider selections (including config overrides) retain normal
+routing and cross-provider history checks. This does not make OpenAI history
+portable to external models or disable the automatic-helper policy.
+
 ### Optional OpenAI background inference
 
 Set `allow_automatic_openai_inference = false` in the external profile. The
