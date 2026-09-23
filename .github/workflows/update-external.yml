@@ -41,7 +41,7 @@ jobs:
           set -euo pipefail
           git config user.name 'codex-external updater'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git fetch origin external/0.154.0-alpha.6.2
+          git fetch origin external/0.155.0-alpha.16.3
           source_sha=$(git rev-parse FETCH_HEAD)
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           release="$REQUESTED_TAG"
@@ -51,7 +51,7 @@ jobs:
           echo "Selected upstream release: $release"
           [[ "$release" =~ ^rust-v[0-9][0-9A-Za-z.-]*$ ]]
           git fetch https://github.com/openai/codex.git "refs/tags/$release:refs/tags/$release"
-          base=b5bffd3ec4db487e7e3dec59663875b0ef7b72ca
+          base=ffa06df2317e3e65fc74da977a5884710c5382d5
           # Release-stamping commits may be siblings rather than ancestors.
           # The fixed rebase base is explicit; tests gate every candidate.
           qualified="external-qualified/${release#rust-v}/${source_sha:0:12}"
@@ -91,6 +91,8 @@ jobs:
           just test -p codex-core -E 'test(cross_provider_subagents) | test(subagent_model_provider) | test(multi_agent_message) | test(agent::role::tests) | test(model_picker) | test(mixed_catalog) | test(selected_model_routes) | test(routed_model_replaces) | test(apply_patch)' -j 3
           just test -p codex-app-server -E 'test(automatic_openai_policy) | test(multi_agent_v2_developer_instructions) | test(thread_start_routes_model_picker_selection) | test(thread_list_mixed_catalog) | test(thread_list_respects_provider_filter) | test(thread_list_pagination) | test(suite::auth::) | test(suite::v2::account::)' -j 3
           just test -p codex-memories-write -E 'test(guard::tests::)' -j 3
+          just test -p codex-app-server -E 'test(side_chat)' -j 3
+          just test -p codex-tui -E 'test(resume_picker) | test(recap)' -j 3
       - name: Publish qualified candidate, preserving prior releases
         if: steps.candidate.outputs.needed == 'true'
         env:
@@ -99,7 +101,7 @@ jobs:
           SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
         run: |
           set -euo pipefail
-          source_now=$(git ls-remote --heads origin external/0.154.0-alpha.6.2 | cut -f1)
+          source_now=$(git ls-remote --heads origin external/0.155.0-alpha.16.3 | cut -f1)
           [[ "$source_now" == "$SOURCE_SHA" ]] || { echo 'Patch changed during qualification; rerun against new source.'; exit 1; }
           git add codex-rs/Cargo.lock
           if ! git diff --cached --quiet; then

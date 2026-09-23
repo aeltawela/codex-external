@@ -1,7 +1,7 @@
 # Codex-external maintenance
 
 This branch contains only GitHub-hosted update automation. Source is on
-`external/0.154.0-alpha.6.2`. The updater rebases that patch series onto newer
+`external/0.155.0-alpha.16.3`. The updater rebases that patch series onto newer
 official Rust release tags and qualifies candidates on macOS before publishing
 `external-qualified/<release>` and moving `external/current`.
 
