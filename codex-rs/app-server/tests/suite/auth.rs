@@ -346,6 +346,14 @@ async fn account_auth_is_independent_of_mixed_catalog_inference_provider(
                 plan_type: AccountPlanType::Pro,
             }),
             requires_openai_auth: false,
+            workspace_routing: expose_account.then(|| {
+                codex_app_server_protocol::WorkspaceRouting {
+                    chatgpt_account_id: "acct_test".to_string(),
+                    backend_origin: "https://chatgpt.com".to_string(),
+                    account_routing_override:
+                        codex_app_server_protocol::AccountRoutingOverride::NoConstraint,
+                }
+            }),
         }
     );
     Ok(())

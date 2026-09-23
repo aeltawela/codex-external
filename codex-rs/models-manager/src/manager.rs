@@ -46,6 +46,12 @@ pub trait ModelsEndpointClient: fmt::Debug + Send + Sync {
     /// Returns whether this provider can authenticate command-scoped requests.
     fn has_command_auth(&self) -> bool;
 
+    /// Whether explicit provider-owned credentials allow remote catalog discovery.
+    /// This must not depend on an ambient ChatGPT account.
+    fn has_provider_auth(&self) -> bool {
+        false
+    }
+
     /// Returns whether the currently resolved auth can use Codex backend-only models.
     fn uses_codex_backend(&self) -> ModelsEndpointFuture<'_, bool>;
 
@@ -511,6 +517,7 @@ impl OpenAiModelsManager {
     async fn should_refresh_models(&self) -> bool {
         self.endpoint_client.uses_codex_backend().await
             || self.endpoint_client.has_command_auth()
+            || self.endpoint_client.has_provider_auth()
             || self.supports_api_key_discovery()
     }
 

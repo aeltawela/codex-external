@@ -2,7 +2,6 @@ use super::model_provider::*;
 use super::residency::is_v2_resident_session_source;
 use super::*;
 use crate::agent::child_config::build_agent_resume_config;
-use crate::agent::role::apply_role_to_config;
 use crate::agent::role::apply_role_to_config_for_resume;
 use crate::codex_thread::CodexThread;
 use crate::config::PermissionProfileSnapshot;

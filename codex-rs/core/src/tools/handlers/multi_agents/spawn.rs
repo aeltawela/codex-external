@@ -97,6 +97,7 @@ async fn handle_spawn_agent(
         step_context.as_ref(),
         SpawnConfigOptions {
             version: SpawnConfigVersion::V1,
+            apply_model_overrides: true,
             full_history_fork: args.fork_context,
             role_name,
             model: args.model.as_deref(),

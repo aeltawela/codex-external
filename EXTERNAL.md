@@ -5,9 +5,39 @@ Personal experimental build of Codex with the cross-provider agent patch from
 
 ## Source lineage
 
-- Upstream: `rust-v0.154.0-alpha.6.2` (`b5bffd3ec4db487e7e3dec59663875b0ef7b72ca`).
+- Current upstream: `rust-v0.155.0-alpha.16.3`, matching the backend bundled
+  with Desktop `26.917.62051` (build `10789`).
+- Current branch: `external/0.155.0-alpha.16.3`.
+- Previous upstream: `rust-v0.154.0-alpha.6.2` (`b5bffd3ec4db487e7e3dec59663875b0ef7b72ca`).
 - Original patch: `af3072ebbcde8d47bb8592a6a3226ef1b83b560a`.
 - Rebased patch: `124101b30b` on `external/0.154.0-alpha.6.2`.
+- The September 23 rebase retains the fourteen fork commits through
+  `5cf5a97e6`. Provider-aware child configuration now uses upstream's
+  `agent/child_config` module, message delivery uses upstream's shared delivery
+  path, and account visibility integrates with workspace-routing discovery.
+- Qualification results below are dated historical results, not certification
+  of later rebases.
+
+### September 23, 2026 qualification
+
+The Desktop-matched `0.155.0-alpha.16.3` rebase passed 987 focused tests across
+core, app-server, agent roles, provider/model management, memories, and TUI.
+Two thinking-catalog tests also passed. Scoped Clippy, formatting, configuration
+schema generation, and Bazel lock refresh completed successfully. The CLI and
+code-mode companion were built on Apple Silicon with Rust 1.95.0; the companion
+uses checksum-verified Codex V8 release artifacts.
+
+The first test pass exposed two compatibility defects now corrected: role-locked
+external spawns must bypass parent model defaults, and provider-owned catalog
+authentication must not depend on ambient ChatGPT login. The latter is covered
+both signed in and signed out, including absence of the ChatGPT account header.
+
+An isolated app-server using the local external configuration initialized and
+listed 16 models, including nine external model IDs. The experimental protocol
+schema matched the official Desktop build 10789 backend exactly. The history
+helper policy check passed with `--ignore-user-config`. These startup checks
+sent no inference requests and did not open existing task storage. Native UI
+interaction and fresh paid-provider inference were not part of this qualification.
 - Rebase resolution retains both the upstream token-budget startup module and
   the patch's subagent-provider module and exports.
 - The release tag's Cargo.lock still used `0.0.0` for workspace packages;

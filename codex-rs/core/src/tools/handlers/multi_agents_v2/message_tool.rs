@@ -5,12 +5,13 @@
 
 use super::analytics::ToolCallAnalytics;
 use super::*;
-use crate::agent::control::MessageDeliveryError;
-use crate::agent::control::MessageDeliveryMode;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::control::AgentMessage;
+use crate::agent::control::MessageDeliveryError;
+use crate::agent::control::MessageDeliveryMode;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::handlers::multi_agent_message::AgentMessageRoute;
+use codex_protocol::AgentPath;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,21 +40,27 @@ pub(super) async fn handle_message_string_tool(
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let ToolInvocation {
         session,
-        turn,
+        step_context,
         call_id,
         source,
         ..
     } = invocation;
+    let turn = &step_context.turn;
     message_route.validate_message(&message)?;
-    let receiver_thread_id = resolve_agent_target(&session, &turn, &target).await?;
+    let receiver_thread_id = resolve_agent_target(&session, turn, &target).await?;
     analytics.set_receiver(receiver_thread_id);
     let resume_config =
-        build_agent_resume_config(&turn).map_err(FunctionCallError::RespondToModel)?;
-    let receiver_is_openai = session.services.agent_control
+        build_agent_resume_config(turn).map_err(FunctionCallError::RespondToModel)?;
+    let receiver_is_openai = session
+        .services
+        .agent_control
         .agent_uses_openai_model_provider(receiver_thread_id, &resume_config)
         .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
-    let receiver = session.services.agent_control.ensure_agent_known(receiver_thread_id)
+    let receiver = session
+        .services
+        .agent_control
+        .ensure_agent_known(receiver_thread_id)
         .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     let receiver_path = receiver.agent_path.ok_or_else(|| {
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
@@ -62,7 +69,9 @@ pub(super) async fn handle_message_string_tool(
     message_route.into_communication(
         &source,
         receiver_is_openai,
-        turn.session_source.get_agent_path().unwrap_or_else(AgentPath::root),
+        turn.session_source
+            .get_agent_path()
+            .unwrap_or_else(AgentPath::root),
         receiver_path,
         message.clone(),
         mode == MessageDeliveryMode::TriggerTurn,
@@ -77,7 +86,7 @@ pub(super) async fn handle_message_string_tool(
         .agent_control
         .deliver_message(
             session.thread_id,
-            &turn,
+            turn,
             receiver_thread_id,
             agent_message,
             mode,
@@ -91,7 +100,7 @@ pub(super) async fn handle_message_string_tool(
         })?;
     emit_sub_agent_activity(
         &session,
-        &turn,
+        turn,
         SubAgentActivityItem {
             id: call_id,
             agent_thread_id: receiver_thread_id,

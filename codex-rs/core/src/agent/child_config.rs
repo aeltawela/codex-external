@@ -10,8 +10,8 @@ use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::thread_manager::models_manager_for_config;
-use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::manager::RefreshStrategy;
+use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::openai_models::ModelPreset;
@@ -51,6 +51,8 @@ pub(crate) enum SpawnConfigVersion {
 
 pub(crate) struct SpawnConfigOptions<'a> {
     pub(crate) version: SpawnConfigVersion,
+    /// Role-locked external routes must not resolve the parent's model defaults.
+    pub(crate) apply_model_overrides: bool,
     pub(crate) full_history_fork: bool,
     pub(crate) role_name: Option<&'a str>,
     pub(crate) model: Option<&'a str>,
@@ -74,14 +76,16 @@ pub(crate) async fn prepare_agent_spawn_config(
     if options.version == SpawnConfigVersion::V1 && options.full_history_fork {
         reject_full_fork_agent_type_override(options.role_name)?;
     }
-    apply_requested_spawn_agent_model_overrides(
-        session,
-        step_context,
-        &mut config,
-        options.model,
-        options.reasoning_effort,
-    )
-    .await?;
+    if options.apply_model_overrides {
+        apply_requested_spawn_agent_model_overrides(
+            session,
+            step_context,
+            &mut config,
+            options.model,
+            options.reasoning_effort,
+        )
+        .await?;
+    }
     if !options.full_history_fork
         || (options.version == SpawnConfigVersion::V2 && options.role_name.is_some())
     {

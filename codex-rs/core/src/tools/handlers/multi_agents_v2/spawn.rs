@@ -1,8 +1,8 @@
 use super::*;
 use crate::agent::child_config::SpawnConfigOptions;
 use crate::agent::child_config::SpawnConfigVersion;
-use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::child_config::models_manager_for_spawn_config;
+use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
 use crate::agent::next_thread_spawn_depth;
@@ -141,6 +141,7 @@ async fn handle_spawn_agent(
         step_context.as_ref(),
         SpawnConfigOptions {
             version: SpawnConfigVersion::V2,
+            apply_model_overrides: message_route.accepts_spawn_model_overrides(),
             full_history_fork: matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)),
             role_name,
             model: args.model.as_deref(),

@@ -154,6 +154,11 @@ impl ModelsEndpointClient for OpenAiModelsEndpoint {
         self.provider_info.has_command_auth()
     }
 
+    fn has_provider_auth(&self) -> bool {
+        self.provider_info.experimental_bearer_token.is_some()
+            || self.provider_info.env_key.is_some()
+    }
+
     fn uses_codex_backend(&self) -> ModelsEndpointFuture<'_, bool> {
         Box::pin(OpenAiModelsEndpoint::uses_codex_backend(self))
     }

@@ -80,14 +80,17 @@ impl AccountRequestProcessor {
             // Account identity is separate from the provider used for inference.
             let show_mixed_catalog_account = !config.model_provider_routes.is_empty()
                 && !config.model_provider.is_amazon_bedrock()
-                && !matches!(auth, Some(CodexAuth::BedrockApiKey(_) | CodexAuth::BedrockAccessKeys(_)));
-            let account_provider = config.model_providers.get("openai")
+                && !matches!(
+                    auth,
+                    Some(CodexAuth::BedrockApiKey(_) | CodexAuth::BedrockAccessKeys(_))
+                );
+            let account_provider = config
+                .model_providers
+                .get("openai")
                 .filter(|_| show_mixed_catalog_account)
-                .cloned().unwrap_or_else(|| config.model_provider.clone());
-            let provider = create_model_provider(
-                account_provider,
-                Some(self.auth_manager.clone()),
-            );
+                .cloned()
+                .unwrap_or_else(|| config.model_provider.clone());
+            let provider = create_model_provider(account_provider, Some(self.auth_manager.clone()));
             let account_state = provider
                 .account_state()
                 .map_err(|err| invalid_request(err.to_string()))?;

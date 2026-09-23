@@ -283,7 +283,7 @@ async fn v2_nested_spawn_checks_shared_active_execution_capacity() -> Result<()>
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn child_turn_start_preserves_root_attribution() -> Result<()> {
     let server = start_mock_server().await;
-    mount_root_collaboration_call(
+    mount_collaboration_call(
         &server,
         FIRST_PROMPT,
         "first-call",

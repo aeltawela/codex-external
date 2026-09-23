@@ -1288,46 +1288,51 @@ printf '%s\n' '{"AccessKeyId":"exported","SecretAccessKey":"secret"}'
 
     #[tokio::test]
     async fn configured_provider_models_manager_uses_provider_bearer_token() {
-        let server = MockServer::start().await;
-        let remote_models = vec![remote_model("provider-model")];
-
-        Mock::given(method("GET"))
-            .and(path("/models"))
-            .and(header_regex("Authorization", "Bearer provider-token"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(ModelsResponse {
-                        models: remote_models.clone(),
-                    }),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let mut provider_info = provider_for(server.uri());
-        provider_info.experimental_bearer_token = Some("provider-token".into());
-        let provider = create_model_provider(
-            provider_info,
+        for auth in [
+            None,
             Some(AuthManager::from_auth_for_testing(
                 CodexAuth::create_dummy_chatgpt_auth_for_testing(),
             )),
-        );
+        ] {
+            let server = MockServer::start().await;
+            let remote_models = vec![remote_model("provider-model")];
 
-        let manager =
-            provider.models_manager(test_codex_home(), /*config_model_catalog*/ None);
-        let catalog = manager
-            .raw_model_catalog(
-                RefreshStrategy::Online,
-                HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-            )
-            .await;
+            Mock::given(method("GET"))
+                .and(path("/models"))
+                .and(header_regex("Authorization", "Bearer provider-token"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "application/json")
+                        .set_body_json(ModelsResponse {
+                            models: remote_models.clone(),
+                        }),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
 
-        assert!(
-            catalog
-                .models
-                .iter()
-                .any(|model| model.slug == "provider-model")
-        );
+            let mut provider_info = provider_for(server.uri());
+            provider_info.experimental_bearer_token = Some("provider-token".into());
+            let provider = create_model_provider(provider_info, auth);
+
+            let manager =
+                provider.models_manager(test_codex_home(), /*config_model_catalog*/ None);
+            let catalog = manager
+                .raw_model_catalog(
+                    RefreshStrategy::Online,
+                    HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+                )
+                .await;
+
+            assert!(
+                catalog
+                    .models
+                    .iter()
+                    .any(|model| model.slug == "provider-model")
+            );
+            let requests = server.received_requests().await.expect("recorded requests");
+            assert_eq!(requests.len(), 1);
+            assert!(!requests[0].headers.contains_key("chatgpt-account-id"));
+        }
     }
 }
